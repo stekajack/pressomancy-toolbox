@@ -258,64 +258,6 @@ def check_data(master_dict, parallel_param_id, parallel_param_val):
     print('problems ', problems)
     return unfinished
 
-
-def generate_submission_scripts(pool_gather, output_file_prefix='submit', jobs_per_file=8):
-    file_count = 1
-    string_count = 0
-    header = '''#!/bin/bash
-    #
-#SBATCH -J sus_jobs
-#SBATCH -N 1              ## 4 node
-#SBATCH --ntasks-per-node=128        ## number of tasks per node
-#SBATCH --ntasks-per-core=1
-#SBATCH --partition=zen3_0512
-#SBATCH --qos=zen3_0512
-#SBATCH --mail-type=FAIL
-#SBATCH --mail-user=<avantardejack@gmail.com>
-
-export MODULEPATH=/opt/sw/vsc4/VSC/Modules/TUWien:/opt/sw/vsc4/VSC/Modules/Intel/oneAPI:/opt/sw/vsc4/VSC/Modules/Parallel-Environment:/opt/sw/vsc4/VSC/Modules/Libraries:/opt/sw/vsc4/VSC/Modules/Compiler:/opt/sw/vsc4/VSC/Modules/Debugging-and-Profiling:/opt/sw/vsc4/VSC/Modules/Applications:/opt/sw/vsc4/VSC/Modules/p71545::/opt/sw/spack-0.17.1/var/spack/environments/zen3/modules/linux-almalinux8-zen:/opt/sw/spack-0.17.1/var/spack/environments/zen3/modules/linux-almalinux8-zen2:/opt/sw/spack-0.17.1/var/spack/environments/zen3/modules/linux-almalinux8-zen3
-
-module purge
-module load --auto gcc/11.2.0-gcc-11.2.0-5i4t2bo
-module load --auto python/3.10.5-gcc-11.2.0-ikekciw
-module load --auto fftw/3.3.10-gcc-11.2.0-64wpmh3
-module load --auto openmpi/4.1.4-gcc-11.2.0-2k4wn7u
-module load --auto cmake/3.21.4-gcc-11.2.0-fmwwhz6
-    '''
-    output_file = open(output_file_prefix + str(file_count) + '.slurm', 'w')
-    output_file.write(header + '\n')
-
-    for pool in pool_gather:
-        for data_path in pool:
-            ass = data_path.split('/')
-            face = ass[-1].split('_')
-            face[-1] = face[-1].replace('.p.gz', '')
-            full = [ass[-2]] + face[3:]
-            el1, el2, el3, el4, el5, el6, el7 = full
-            # string = 'mpirun -np 16 /home/fs70488/denizka/PyDevSW/espresso_patched/build/pypresso $SUS_SCIPTS/_core_sw.py -no_obj {} -no_per {} -density {} -kT_KVm_inv {} -xi {} -vdW {} -path_data /gpfs/data/fs70488/denizka/DATA/sw_testing/{} -MODE LOAD &> /gpfs/data/fs70488/denizka/DATA/sw_testing/sw_filaments_{}_{}_{}_{}_{}.txt &'.format(
-            #     el2, el3, el4, el5, el6, el7, el1, el1, el2, el5, el6, el7)
-            # string = 'mpirun -np 16 /home/fs70488/denizka/PyDevSW/espresso_patched/build/pypresso $SUS_SCIPTS/_core.py -no_obj {} -no_per {} -density {} -dipm {} -h_field 0 0 {} -vdW {} -path_data $DATA_SUS/{} -MODE NEW &> $DATA_SUS/ndf_{}_{}_{}_{}_{}.txt &'.format(
-            #     el2, el3, el4, el5, el6, el7, el1, el1, el2, el5, el6, el7)
-            # string = 'mpirun -np 16 /home/fs70806/deniz/PyDev/espresso_patched/build_vsc5/pypresso $SUS_SCIPTS/_core.py -no_obj {} -no_per {} -density {} -dipm {} -h_field 0 0 {} -vdW {} -path_data $DATA_SUS/{} -MODE NEW &> $DATA_SUS/ndf_{}_{}_{}_{}_{}.txt &'.format(
-            #     el2, el3, el4, el5, el6, el7, el1, el1, el2, el5, el6, el7)
-            string = 'mpirun -np 16 /home/fs70488/denizka/PyDevSW/espresso_patched/build/pypresso $SUS_SCIPTS/_core.py -no_obj {} -no_per {} -density {} -dipm {} -h_field 0 0 {} -vdW {} -path_data /gpfs/data/fs70488/denizka/DATA/ferro_suspension/{} -MODE LOAD &> /gpfs/data/fs70488/denizka/DATA/ferro_suspension/ferro_{}_{}_{}_{}_{}.txt &'.format(
-                el2, el3, el4, el5, el6, el7, el1, el1, el2, el5, el6, el7)
-            output_file.write(string + '\n')
-            string_count += 1
-
-            if string_count == jobs_per_file:
-                output_file.write('wait' + '\n')
-                output_file.close()
-                file_count += 1
-                string_count = 0
-                output_file = open(output_file_prefix +
-                                   str(file_count) + '.slurm', 'w')
-                output_file.write(header + '\n')
-
-    output_file.write('wait' + '\n')
-    output_file.close()
-
-
 def convert_dict_to_list(array):
 
     def dict_to_list(elem):

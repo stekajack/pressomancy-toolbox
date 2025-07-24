@@ -1,15 +1,112 @@
 import random
+from pmtools.resources.gryation_tensor import GyrationTensor
 from itertools import product
 import numpy as np
 import igraph as ig
-from itertools import product, combinations
-import refractored_toolbox as context
+from itertools import product, combinations, pairwise
+import pmtools.refractored_toolbox as context
 # import vg
 import os
 from pressomancy.analysis import H5DataSelector
 import h5py
 # import pyscal as pc
 
+def determine_box_dim_from_filename(template, data_path):
+    """
+    Extract simulation parameters from a filename and compute box dimensions.
+
+    The function converts a Template (or template string) into a regex pattern
+    using `template_to_regex` and extracts parameters from the provided filename.
+    It uses the extracted 'which_concentration' and 'which_quartet_number'
+    values to calculate the box dimensions.
+
+    Parameters
+    ----------
+    template : Template or str
+        A filename template containing placeholders.
+    data_path : str
+        The filename or path matching the template.
+
+    Returns
+    -------
+    numpy.ndarray
+        A 3-element array [box_l, box_l, box_l] representing the box dimensions.
+
+    Raises
+    ------
+    LookupError
+        If the filename does not match the provided template.
+    """
+    regex_pattern = context.template_to_regex(template)
+    match = regex_pattern.fullmatch(data_path)
+    if not match:
+        raise LookupError("Failed to extract parameters from templated filename (no matching key)")
+        
+    params = match.groupdict()
+    concentration = float(params['which_concentration'])
+    no_obj = int(params['which_quartet_number'])
+    N_avog = 6.02214076e23  # Avogadro's number
+    rho_si = concentration * N_avog
+    N = int(no_obj / 3)
+    vol = N / rho_si
+    box_l = pow(vol, 1/3) / 0.4e-09
+    box_dim = box_l * np.ones(3)
+        
+    return box_dim
+
+def per_fil_gyr_h5_modern(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):
+
+    data_with_context = {}
+    data_file=h5py.File(data_path, "r")
+    data=H5DataSelector(data_file, particle_group="Filament")
+    if extra_flag == 'concentration_variation':
+        box_dim = determine_box_dim_from_filename(template_hndl,data_path)
+    monomer_no = int(context.determine_key_val_from_filename(template_hndl,data_path,'what_monomer_number'))
+    accumulated_gts = []
+    start, end, step = chunk
+    for col in data.timestep[start:end:step].timestep:
+        fitered_fil_ids=[]
+        for myed in list(col.get_connectivity_values('Filament')):
+            parts=col.select_particles_by_object('Filament',myed)
+            types=parts.type.flatten()
+            if 5 not in types:
+                fitered_fil_ids.append(myed)
+
+        fitered_fil_ids.sort()
+        pf_indices=[]
+        filtered_pos=[]
+
+        for myed in fitered_fil_ids:
+            ids_shuffled=col.select_particles_by_object('Filament',myed).id.flatten()
+            pos_shuffled=col.select_particles_by_object('Filament',myed).pos
+            order = np.argsort(ids_shuffled)
+            ids_ordered = ids_shuffled[order]
+            pos_ordered = pos_shuffled[order]
+            # Remove patches for the iGraph unfolding to work correctly. 
+            # Indices must be increasing monotonically (patches do not w.r.t rest of part)
+            pf_indices.append(ids_ordered[:-2*monomer_no])
+            filtered_pos.extend(pos_ordered[:-2*monomer_no])
+
+        # posss = [context.fold_coordinates_pp(x, box_dim=box_dim) for x in filtered_pos]
+        posss = filtered_pos
+        edges = [(int(x), int(y)) for pf_el in pf_indices for x,
+                     y in pairwise(pf_el)]
+        g2 = ig.Graph(n=len(posss), edges=edges)
+        g2.vs["pos"] = posss
+        g2.simplify()
+        decomposition = g2.decompose()
+        for subgraph in decomposition:
+            flag, pass_graph = context.check_breakage(
+                subgraph, box_dim)
+            if not flag:
+                positions = context.unbreak_graph(
+                    pass_graph, box_dim)
+            else:
+                positions = np.array(subgraph.vs['pos'])
+            accumulated_gts.append(GyrationTensor(positions))
+    data_with_context[data_path] = accumulated_gts
+    print('DONE!!!')
+    return data_with_context
 
 def per_fil_mag(data_iterator, box_dim, chunk=(-50, -1), norm=1., crit=1.47):
     """
