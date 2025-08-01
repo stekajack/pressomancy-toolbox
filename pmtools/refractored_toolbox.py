@@ -1,5 +1,5 @@
 import gzip
-from itertools import product, combinations
+from itertools import product
 import pickle
 import pandas as pd
 import os
@@ -8,7 +8,6 @@ import igraph as ig
 import random
 from string import Template
 import re
-import warnings 
 
 def determine_key_val_from_filename(template, data_path, key):
     """
@@ -185,6 +184,49 @@ def assemble_paths(master_dict, template_hndl, parallel_param_id=None):
     
     return keys_assembler, paths_to_calc_with
 
+def determine_box_dim_from_filename(template, data_path, key_concentration, key_obj_no):
+    """
+    Extract simulation parameters from a filename and compute box dimensions.
+
+    The function converts a Template (or template string) into a regex pattern
+    using `template_to_regex` and extracts parameters from the provided filename.
+    It uses the extracted key_concentration and key_obj_no to obtain concentration
+    and object number values to calculate the box dimensions.
+
+    Parameters
+    ----------
+    template : Template or str
+        A filename template containing placeholders.
+    data_path : str
+        The filename or path matching the template.
+
+    Returns
+    -------
+    numpy.ndarray
+        A 3-element array [box_l, box_l, box_l] representing the box dimensions.
+
+    Raises
+    ------
+    LookupError
+        If the filename does not match the provided template.
+    """
+    regex_pattern = template_to_regex(template)
+    match = regex_pattern.fullmatch(data_path)
+    if not match:
+        raise LookupError("Failed to extract parameters from templated filename (no matching key)")
+        
+    params = match.groupdict()
+    concentration = float(params[key_concentration])
+    no_obj = int(params[key_obj_no])
+    N_avog = 6.02214076e23  # Avogadro's number
+    rho_si = concentration * N_avog
+    N = int(no_obj / 3)
+    vol = N / rho_si
+    box_l = pow(vol, 1/3) / 0.4e-09
+    box_dim = box_l * np.ones(3)
+        
+    return box_dim
+
 def fetch_data(*args, base_dir, extension='.p.gz'):
     # check if any argument is a string and wrap it in a tuple if it is
     args = [(arg,) if isinstance(arg, str) else arg for arg in args]
@@ -210,7 +252,6 @@ def fetch_data(*args, base_dir, extension='.p.gz'):
             print(f"An error occurred: {str(exception)}")
             print(file_path)
             yield pd.DataFrame(), file_path
-
 
 def run_task(kernel, master_dict, parallel_param_id, parallel_param_val, kernel_kwargs={}):
     back_keys = ['what_am_I_looking_at', 'which_sim']
