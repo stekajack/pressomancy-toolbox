@@ -6,7 +6,6 @@ import pmtools.refractored_toolbox as context
 from pressomancy.analysis import H5DataSelector
 from pressomancy.helper_functions import get_neighbours_cross_lattice
 import h5py
-import sq_avx
 
 def per_fil_gyr_h5_modern(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):
 
@@ -176,8 +175,15 @@ def lp_prjection_h5(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm
         accumulated_lp_seg, axis=0), xax
     return data_with_context
 
-def calculate_sf_h5(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):
-    
+def calculate_sf_h5(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):]
+
+    """
+    Calculate the structure factor for a given HDF5 data file.
+    Uses the `sq_avx` module for efficient computation. See https://github.com/stekajack/espressoSq
+    """
+
+    import sq_avx
+
     data_with_context = {}
     data_file=h5py.File(data_path, "r")
     data=H5DataSelector(data_file,particle_group="Filament")
@@ -193,6 +199,6 @@ def calculate_sf_h5(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm
             posss, 120, box_dim[0], 100, 40)
         wavevectors_container.append(wavevectors)
         intensities_container.append(intensities)
-        
+
     data_with_context[data_path] = wavevectors_container, intensities_container
     return data_with_context
