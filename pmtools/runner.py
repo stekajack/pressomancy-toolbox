@@ -6,7 +6,7 @@ import gzip
 import sys
 import time
 import threading
-
+import numpy as np
 class Engine():
     """
     Engine class for managing parallel execution of registered kernel functions
@@ -82,22 +82,27 @@ class Engine():
         Engine.max_workers_sum += self.max_workers
         if Engine.max_workers_sum > Engine.global_max_workers:
             raise RuntimeError(f"Total max workers {Engine.max_workers_sum} exceeds global limit {Engine.global_max_workers}.")
-        self._executor_pool_hndl = ProcessPoolExecutor(max_workers=self.max_workers)
-        for function_handle in self.functions_to_call:
-            futures={}
-            for iid,string_id in enumerate(self._keys_assembly):
-                futures[string_id]=[]
-                for path in self._paths_accordingly[iid]:
-                    loc_path=self._work_dir+path
-                    future_def=f'{function_handle.__name__}::{loc_path}'
-                    if future_def in Engine.event_horison:
-                        raise RuntimeError(f"Multiple futures were attemped to be created for the same location {loc_path}.")
-                    Engine.event_horison.append(future_def)
-                    future=self._executor_pool_hndl.submit(function_handle, loc_path, self.template_hndl, **self.kernel_kwargs[function_handle.__name__])
-                    futures[string_id].append(future)
-                    self._flat_future_list.append(future)
-            self._pool_global[function_handle.__name__] = futures
-            self.start_time = time.time()
+        try:
+            self._executor_pool_hndl = ProcessPoolExecutor(max_workers=self.max_workers)
+            for function_handle in self.functions_to_call:
+                futures={}
+                for iid,string_id in enumerate(np.atleast_1d(self._keys_assembly)):
+                    futures[string_id]=[]
+                    for path in np.atleast_1d(self._paths_accordingly[iid]):
+                        loc_path=self._work_dir+path
+                        future_def=f'{function_handle.__name__}::{loc_path}'
+                        if future_def in Engine.event_horison:
+                            raise RuntimeError(f"Multiple futures were attemped to be created for the same location {loc_path}.")
+                        Engine.event_horison.append(future_def)
+                        future=self._executor_pool_hndl.submit(function_handle, loc_path, self.template_hndl, **self.kernel_kwargs[function_handle.__name__])
+                        futures[string_id].append(future)
+                        self._flat_future_list.append(future)
+                self._pool_global[function_handle.__name__] = futures
+                self.start_time = time.time()
+        except Exception as e:
+            self.shutdown()
+            raise e
+
             
     def track_progress_pretty(self):
         """
@@ -114,7 +119,7 @@ class Engine():
             return f"{mins:02}:{secs:02}"
         
         def render_loop():
-            while True:
+            while not stop_flag.is_set():
                 with completed_lock:
                     current_completed = completed
                     elapsed = time.time() - self.start_time
@@ -144,8 +149,14 @@ class Engine():
         if any_running:
             completed_lock = threading.Lock()
             render_thread = threading.Thread(target=render_loop)
+            stop_flag = threading.Event()      
             render_thread.start()
-            for _ in as_completed(self._flat_future_list):
+            for future in as_completed(self._flat_future_list):
+                exc = future.exception()
+                if exc is not None:
+                    stop_flag.set()
+                    render_thread.join()
+                    self.shutdown()
                 with completed_lock:
                     completed += 1
             render_thread.join()
@@ -193,5 +204,5 @@ class Engine():
         """
         Shut down the executor pool and release resources.
         """
-        self._executor_pool_hndl.shutdown(wait=True)
+        self._executor_pool_hndl.shutdown(wait=False,cancel_futures=True)
         print("Runners in Pool closed.")
