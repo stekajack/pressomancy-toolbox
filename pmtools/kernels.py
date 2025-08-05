@@ -192,7 +192,7 @@ def calculate_sf_h5(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm
     start, end, step = chunk
     for col in data.timestep[start:end:step].timestep:
         posss = col.pos_folded
-        types = col.types.flatten()
+        types = col.type.flatten()
         mask = types != 5
         posss = posss[mask]
         wavevectors, intensities = sq_avx.calculate_structure_factor(
