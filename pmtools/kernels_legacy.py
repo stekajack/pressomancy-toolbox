@@ -1677,3 +1677,98 @@ def cherry_pick_vert(data_iterator, box_dim, chunk=(-50, -1), crit=1.3, en_crit=
         except StopIteration:
             break
     return per_sim_data
+
+def persistance_lenght_calc_g4(data_iterator, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):
+
+    data_with_context = {}
+    while True:
+        try:
+            df, data_path = next(data_iterator)
+
+            if len(df) == 0:
+                data_with_context[data_path] = float('nan')
+
+            else:
+                last_number = data_path.split('_')[-1]
+                last_number = int(last_number.split('.')[0])
+                spacing = 3*25*last_number
+                accumulated_bond_per_timestep = []
+                start, end, step = chunk
+                relevant_columns = df.columns.values[start:end:step]
+                _results = np.zeros(int(last_number) - 1, dtype=np.float32)
+
+                for col in relevant_columns:
+                    posss = df[col].apply(
+                        lambda x: x['pos_folded'])
+                    types = df[col].apply(
+                        lambda x: x['type'])
+                    mask = (types != 3) & (types != 5)
+                    posss = np.array(posss[mask])
+                    pf_indices = np.arange(posss.shape[0]).reshape(
+                        posss.shape[0]//spacing, -1)
+                    edges = [(x, y) for pf_el in pf_indices for x,
+                             y in zip(pf_el[:-1], pf_el[1:])]
+                    g2 = ig.Graph(n=len(posss), edges=edges)
+                    g2.vs["pos"] = posss
+                    g2.simplify()
+                    decomposition = g2.decompose()
+                    for subgraph in decomposition:
+                        flag, pass_graph = context.check_breakage(
+                            subgraph, box_dim)
+                        if not flag:
+                            positions = context.unbreak_graph(
+                                pass_graph, box_dim)
+                        else:
+                            positions = np.array(subgraph.vs['pos'])
+                        com_pos = np.mean(positions.reshape(
+                            last_number, -1, 3), axis=1)
+                        segments = np.diff(com_pos, axis=0)
+                        accumulated_bond_per_timestep.append(
+                            np.mean(np.linalg.norm(segments, axis=1)))
+                        segments /= np.sqrt((segments *
+                                            segments).sum(axis=1))[:, None]
+                        inner_pr = np.inner(segments, segments)
+
+                        for i in range(int(last_number)-1):
+                            _results[:(int(last_number)-1) -
+                                     i] += inner_pr[i, i:]
+                bond_l = np.mean(accumulated_bond_per_timestep)
+                norm_acc = len(accumulated_bond_per_timestep)
+                norm = np.linspace(last_number-1, 1, last_number-1)
+                norm *= norm_acc
+                # xax = np.arange(last_number-1) * bond_l+1
+                # popt, pcov = curve_fit(
+                #     func, xax, _results/norm)
+                data_with_context[data_path] = _results/norm, bond_l
+        except StopIteration:
+            break
+    return data_with_context
+
+def calculate_sf(data_iterator, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):
+    import sq_avx
+    
+    data_with_context = {}
+    while True:
+        try:
+            df, data_path = next(data_iterator)
+
+            if len(df) == 0:
+                data_with_context[data_path] = float('nan')
+
+            else:
+                wavevectors_container, intensities_container = [], []
+                start, end, step = chunk
+                relevant_columns = df.columns.values[start:end:step]
+                for col in relevant_columns:
+                    posss = df[col].apply(lambda x: x['pos_folded'])
+                    types = df[col].apply(
+                        lambda x: x['type'])
+                    posss = np.array(posss[types != 5])
+                    wavevectors, intensities = sq_avx.calculate_structure_factor(
+                        posss, 120, box_dim[0], 150, 40)
+                    wavevectors_container.append(wavevectors)
+                    intensities_container.append(intensities)
+                data_with_context[data_path] = wavevectors_container, intensities_container
+        except StopIteration:
+            break
+    return data_with_context

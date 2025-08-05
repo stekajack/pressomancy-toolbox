@@ -89,9 +89,10 @@ class Engine():
                 futures[string_id]=[]
                 for path in self._paths_accordingly[iid]:
                     loc_path=self._work_dir+path
-                    if loc_path in Engine.event_horison:
+                    future_def=f'{function_handle.__name__}::{loc_path}'
+                    if future_def in Engine.event_horison:
                         raise RuntimeError(f"Multiple futures were attemped to be created for the same location {loc_path}.")
-                    Engine.event_horison.append(loc_path)
+                    Engine.event_horison.append(future_def)
                     future=self._executor_pool_hndl.submit(function_handle, loc_path, self.template_hndl, **self.kernel_kwargs[function_handle.__name__])
                     futures[string_id].append(future)
                     self._flat_future_list.append(future)

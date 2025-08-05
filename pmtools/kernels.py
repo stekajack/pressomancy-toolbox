@@ -175,7 +175,7 @@ def lp_prjection_h5(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm
         accumulated_lp_seg, axis=0), xax
     return data_with_context
 
-def calculate_sf_h5(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):]
+def calculate_sf_h5(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):
 
     """
     Calculate the structure factor for a given HDF5 data file.
