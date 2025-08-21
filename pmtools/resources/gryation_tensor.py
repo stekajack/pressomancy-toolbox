@@ -65,6 +65,7 @@ class GyrationTensor:
         return np.sum(self._eigenvalues)
 
     def get_k2(self):
+        self._sanity_check()        
         x,y,z=self._eigenvalues
         return 3/2*(x**2+y**2+z**2)/np.sum(self._eigenvalues)**2-1/2
 
