@@ -140,15 +140,13 @@ class Engine():
             logging.info("✅ All tasks completed successfully.")
 
     @safe_method_call
-    def collect_results(self, kill_workers=True):
+    def collect_results(self):
         logging.info('Collecting results...')
         self.track_progress_pretty()
         for key, elems in self._pool_global.items():
             for assignment, assignment_futures in elems.items():
                 self._pool_global[key][assignment] = [future.result()
                                                       for future in assignment_futures]
-        if kill_workers:
-            self.shutdown()
         logging.info("Results collected.")
         return self._pool_global
 

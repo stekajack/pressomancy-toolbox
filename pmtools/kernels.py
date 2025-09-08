@@ -16,17 +16,11 @@ def per_fil_gyr_h5_modern(data_path, template_hndl, box_dim, chunk=(-5, None, 1)
     accumulated_gts = []
     start, end, step = chunk
     for col in data.timestep[start:end:step].timestep:
-        fitered_fil_ids=[]
-        for myed in list(col.get_connectivity_values('Filament')):
-            parts=col.select_particles_by_object('Filament',myed)
-            types=parts.type.flatten()
-            if 5 not in types:
-                fitered_fil_ids.append(myed)
 
-        fitered_fil_ids.sort()
+        fitered_fil_ids=col.get_connectivity_values('Filament', predicate=lambda subset: not (subset.type == 5).any())
+        subset=col.select_particles_by_object('Filament',fitered_fil_ids,predicate=lambda subset: subset.type != 4)
         pf_indices=[]
         filtered_pos=[]
-        all_pos=[]
         for myed in fitered_fil_ids:
             ids_shuffled=col.select_particles_by_object('Filament',myed).id.flatten()
             pos_shuffled=col.select_particles_by_object('Filament',myed).pos
@@ -37,26 +31,32 @@ def per_fil_gyr_h5_modern(data_path, template_hndl, box_dim, chunk=(-5, None, 1)
             # Indices must be increasing monotonically (patches do not w.r.t rest of part)
             pf_indices.append(ids_ordered[:-2*monomer_no])
             filtered_pos.extend(pos_ordered[:-2*monomer_no])
-            all_pos.extend(pos_ordered)
+        print('new len, old len:',(len(subset.particles), np.shape(pf_indices)))
 
-        # posss = [context.fold_coordinates_pp(x, box_dim=box_dim) for x in filtered_pos]
-        edges = [(int(x), int(y)) for pf_el in pf_indices for x,
-                     y in pairwise(pf_el)]
-        g2 = ig.Graph(n=len(all_pos), edges=edges)
-        g2.vs["pos"] = all_pos
-        g2.simplify()
-        decomposition = g2.decompose()
-        for subgraph in decomposition:
-            flag, pass_graph = context.check_breakage(
-                subgraph, box_dim)
-            if not flag:
-                positions = context.unbreak_graph(
-                    pass_graph, box_dim)
-            else:
-                positions = np.array(subgraph.vs['pos'])
-            accumulated_gts.append(GyrationTensor(positions))
+       
+        accumulated_gts.extend(fitered_fil_ids) 
     data_with_context[data_path] = accumulated_gts
     return data_with_context
+    #     pf_indices=[]
+    #     filtered_pos=[]
+    #     for myed in fitered_fil_ids:
+    #         ids_shuffled=col.select_particles_by_object('Filament',myed).id.flatten()
+    #         pos_shuffled=col.select_particles_by_object('Filament',myed).pos
+    #         order = np.argsort(ids_shuffled)
+    #         ids_ordered = ids_shuffled[order]
+    #         pos_ordered = pos_shuffled[order]
+    #         # Remove patches for the iGraph unfolding to work correctly. 
+    #         # Indices must be increasing monotonically (patches do not w.r.t rest of part)
+    #         pf_indices.append(ids_ordered[:-2*monomer_no])
+    #         filtered_pos.extend(pos_ordered[:-2*monomer_no])
+
+    #     # posss = [context.fold_coordinates_pp(x, box_dim=box_dim) for x in filtered_pos]
+    #     col.select_particles_by_object('Filament',myed)
+    #     edges = [(int(x), int(y)) for pf_el in pf_indices for x,
+    #                  y in pairwise(pf_el)]
+    #     for subgraph in context.get_cluster_iterator(filtered_pos, edges, box_dim):
+    #         accumulated_gts.append(GyrationTensor(subgraph.vs['pos']))
+    
 
 def write_vtk_frame_modern(data_path, path_target='path', frame=0):
     data_file=h5py.File(data_path, "r")
