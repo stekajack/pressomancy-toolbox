@@ -1,70 +1,125 @@
 from pmtools.resources.gryation_tensor import GyrationTensor
 import numpy as np
-import igraph as ig
 from itertools import pairwise
 import pmtools.refractored_toolbox as context
+from pmtools.resources.kernel_config import AnalysisConfig
 from pressomancy.analysis import H5DataSelector
 from pressomancy.helper_functions import get_neighbours_cross_lattice
 import h5py
-
-def per_fil_gyr_h5_modern(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):
+# object_predicate= lambda subset: not (subset.type == 5).any()
+# cfg.particle_predicate
+def per_fil_gyr(cfg: AnalysisConfig):
 
     data_with_context = {}
-    data_file=h5py.File(data_path, "r")
-    data=H5DataSelector(data_file, particle_group="Filament")
-    monomer_no = int(context.determine_key_val_from_filename(template_hndl,data_path,'what_monomer_number'))
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file, particle_group=cfg.particle_group)
     accumulated_gts = []
-    start, end, step = chunk
+    start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
 
-        fitered_fil_ids=col.get_connectivity_values('Filament', predicate=lambda subset: not (subset.type == 5).any())
-        subset=col.select_particles_by_object('Filament',fitered_fil_ids,predicate=lambda subset: subset.type != 4)
-        pf_indices=[]
-        filtered_pos=[]
-        for myed in fitered_fil_ids:
-            ids_shuffled=col.select_particles_by_object('Filament',myed).id.flatten()
-            pos_shuffled=col.select_particles_by_object('Filament',myed).pos
-            order = np.argsort(ids_shuffled)
-            ids_ordered = ids_shuffled[order]
-            pos_ordered = pos_shuffled[order]
-            # Remove patches for the iGraph unfolding to work correctly. 
-            # Indices must be increasing monotonically (patches do not w.r.t rest of part)
-            pf_indices.append(ids_ordered[:-2*monomer_no])
-            filtered_pos.extend(pos_ordered[:-2*monomer_no])
-        print('new len, old len:',(len(subset.particles), np.shape(pf_indices)))
+        fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
+        
+        pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
 
+        edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
+        graph_iterator=context.get_cluster_iterator(col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate), edges, cfg.box_dim)
+        for subgraph in graph_iterator:
+            accumulated_gts.append(GyrationTensor(np.array(subgraph.vs['pos'])))
        
-        accumulated_gts.extend(fitered_fil_ids) 
-    data_with_context[data_path] = accumulated_gts
+    data_with_context[cfg.data_path] = accumulated_gts
     return data_with_context
-    #     pf_indices=[]
-    #     filtered_pos=[]
-    #     for myed in fitered_fil_ids:
-    #         ids_shuffled=col.select_particles_by_object('Filament',myed).id.flatten()
-    #         pos_shuffled=col.select_particles_by_object('Filament',myed).pos
-    #         order = np.argsort(ids_shuffled)
-    #         ids_ordered = ids_shuffled[order]
-    #         pos_ordered = pos_shuffled[order]
-    #         # Remove patches for the iGraph unfolding to work correctly. 
-    #         # Indices must be increasing monotonically (patches do not w.r.t rest of part)
-    #         pf_indices.append(ids_ordered[:-2*monomer_no])
-    #         filtered_pos.extend(pos_ordered[:-2*monomer_no])
 
-    #     # posss = [context.fold_coordinates_pp(x, box_dim=box_dim) for x in filtered_pos]
-    #     col.select_particles_by_object('Filament',myed)
-    #     edges = [(int(x), int(y)) for pf_el in pf_indices for x,
-    #                  y in pairwise(pf_el)]
-    #     for subgraph in context.get_cluster_iterator(filtered_pos, edges, box_dim):
-    #         accumulated_gts.append(GyrationTensor(subgraph.vs['pos']))
+
+def lp_projection(cfg: AnalysisConfig):
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+    monomer_no = int(context.determine_key_val_from_filename(cfg.template_hndl,cfg.data_path,'what_monomer_number'))
+    accumulated_lp_seg = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
+        
+        pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
+
+        edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
+        graph_iterator=context.get_cluster_iterator(col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate), edges, cfg.box_dim)
+        for subgraph in graph_iterator:
+            positions=np.array(subgraph.vs['pos'])
+            com_pos = np.mean(positions.reshape(monomer_no, -1, 3), axis=1)
+            ete_vec = com_pos[-1]-com_pos[0]
+            segments = np.diff(com_pos, axis=0)
+            seg_norms = np.mean(np.linalg.norm(segments, axis=1))
+            res = np.dot(segments, ete_vec)/pow(seg_norms,2)
+            accumulated_lp_seg.append(res)            
+    xax = np.arange(monomer_no-1)+1
+    data_with_context[cfg.data_path] = np.mean(
+        accumulated_lp_seg, axis=0), xax
+    return data_with_context  
+
+
+def calculate_stacking_fraction(cfg: AnalysisConfig):
     
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file, particle_group=cfg.particle_group)
+    data_other=H5DataSelector(data_file,particle_group=cfg.particle_group_alt)
+    
+    start, end, step = cfg.chunk
+    data_per_timestep=[]
+    for col_fil,col_crow in zip(data.timestep[start:end:step].timestep, data_other.timestep[start:end:step].timestep):
+        mask_stack=col_fil.particles[:].type.flatten()==4
+        mask_ligand=col_crow.particles[:].type.flatten()==5
+        
+        mask_stack=np.arange(len(mask_stack))[mask_stack]
+        mask_ligand=np.arange(len(mask_ligand))[mask_ligand]
+        
+        stacking_sites=col_fil.particles[list(mask_stack)]
+        ligands=col_crow.particles[list(mask_ligand)]
+    
+        grouped_indices=get_neighbours_cross_lattice(ligands.pos,stacking_sites.pos, cfg.box_dim[0],cfg.crit)
+        data_per_timestep.append(grouped_indices)
+        
+    data_with_context[cfg.data_path] = data_per_timestep
+    return data_with_context
 
-def write_vtk_frame_modern(data_path, path_target='path', frame=0):
-    data_file=h5py.File(data_path, "r")
-    data=H5DataSelector(data_file ,particle_group="Filament")
+
+def calculate_sf(cfg: AnalysisConfig):
+
+    """
+    Calculate the structure factor for a given HDF5 data file.
+    Uses the `sq_avx` module for efficient computation. See https://github.com/stekajack/espressoSq
+    """
+
+    import sq_avx
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+
+    wavevectors_container, intensities_container = [], []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        posss = col.pos_folded
+        types = col.type.flatten()
+        mask = types != 5
+        posss = posss[mask]
+        wavevectors, intensities = sq_avx.calculate_structure_factor(
+            posss, 120, cfg.box_dim[0], 100, 40)
+        wavevectors_container.append(wavevectors)
+        intensities_container.append(intensities)
+
+    data_with_context[cfg.data_path] = wavevectors_container, intensities_container
+    return data_with_context  
+
+def write_vtk_frame(cfg: AnalysisConfig, frame=-1):
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file ,particle_group=cfg.particle_group)
     data_per_fram=data.timestep[frame]
     positions=data_per_fram.pos_folded
     dipoles=data_per_fram.dip
-    with open(path_target, 'w') as vtk:
+    with open(cfg.path_to_output, 'w') as vtk:
         vtk.write("# vtk DataFile Version 2.0\n")
         vtk.write("particles\n")
         vtk.write("ASCII\n")
@@ -82,123 +137,10 @@ def write_vtk_frame_modern(data_path, path_target='path', frame=0):
                 dipoles[i][0], dipoles[i][1], dipoles[i][2]))
     return 0
 
-def get_data_timestep_len(data_path, particle_group):
+def get_data_timestep_len(cfg: AnalysisConfig):
     
     data_with_context = {}
-    data_file=h5py.File(data_path, "r")
-    data=H5DataSelector(data_file,particle_group=particle_group)
-    data_with_context[data_path] = len(data.timestep)
-    return data_with_context
-
-def calculate_stacking_fraction(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):
-    
-    data_with_context = {}
-    data_file=h5py.File(data_path, "r")
-    data=H5DataSelector(data_file,particle_group="Filament")
-    data_crowder=H5DataSelector(data_file,particle_group="Crowder")
-    
-    start, end, step = chunk
-    data_per_timestep=[]
-    for col_fil,col_crow in zip(data.timestep[start:end:step].timestep, data_crowder.timestep[start:end:step].timestep):
-        mask_stack=col_fil.particles[:].type==4
-        mask_ligand=col_crow.particles[:].type==5
-        
-        mask_stack=np.arange(len(mask_stack.flatten()))[mask_stack.flatten()]
-        mask_ligand=np.arange(len(mask_ligand.flatten()))[mask_ligand.flatten()]
-        
-        stacking_sites=col_fil.particles[list(mask_stack)]
-        ligands=col_crow.particles[list(mask_ligand)]
-    
-        grouped_indices=get_neighbours_cross_lattice(ligands.pos,stacking_sites.pos, box_dim[0],crit)
-        data_per_timestep.append(grouped_indices)
-        
-    data_with_context[data_path] = data_per_timestep
-    return data_with_context
-
-def lp_prjection_h5(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):
-
-    data_with_context = {}
-    data_file=h5py.File(data_path, "r")
-    data=H5DataSelector(data_file,particle_group="Filament")
-    monomer_no = int(context.determine_key_val_from_filename(template_hndl,data_path,'what_monomer_number'))
-    accumulated_lp_seg = []
-    start, end, step = chunk
-    for col in data.timestep[start:end:step].timestep:
-        fitered_fil_ids=[]
-        for myed in list(col.get_connectivity_values('Filament')):
-            parts=col.select_particles_by_object('Filament',myed)
-            types=parts.type.flatten()
-            if 5 not in types:
-                fitered_fil_ids.append(myed)
-
-        fitered_fil_ids.sort()
-        pf_indices=[]
-        filtered_pos=[]
-        all_pos=[]
-        for myed in fitered_fil_ids:
-            ids_shuffled=col.select_particles_by_object('Filament',myed).id.flatten()
-            pos_shuffled=col.select_particles_by_object('Filament',myed).pos
-            order = np.argsort(ids_shuffled)
-            ids_ordered = ids_shuffled[order]
-            pos_ordered = pos_shuffled[order]
-            # Remove patches for the iGraph unfolding to work correctly. 
-            # Indices must be increasing monotonically (patches do not w.r.t rest of part)
-            pf_indices.append(ids_ordered[:-2*monomer_no])
-            filtered_pos.extend(pos_ordered[:-2*monomer_no])
-            all_pos.extend(pos_ordered)
-            filtered_pos.extend(pos_ordered[:-2*monomer_no])
-
-        edges = [(int(x), int(y)) for pf_el in pf_indices for x,
-                     y in pairwise(pf_el)]
-        g2 = ig.Graph(n=len(all_pos), edges=edges)
-        g2.vs["pos"] = all_pos
-        g2.simplify()
-        decomposition = g2.decompose()
-        for subgraph in decomposition:
-            flag, pass_graph = context.check_breakage(
-                subgraph, box_dim)
-            if not flag:
-                positions = context.unbreak_graph(
-                    pass_graph, box_dim)
-            else:
-                positions = np.array(subgraph.vs['pos'])
-
-            com_pos = np.mean(positions.reshape(
-                monomer_no, -1, 3), axis=1)
-            ete_vec = com_pos[-1]-com_pos[0]
-            segments = np.diff(com_pos, axis=0)
-            seg_norms = np.mean(np.linalg.norm(segments, axis=1))
-            res = np.dot(segments, ete_vec)/pow(seg_norms,2)
-            accumulated_lp_seg.append(res)            
-    xax = np.arange(monomer_no-1)+1
-    data_with_context[data_path] = np.mean(
-        accumulated_lp_seg, axis=0), xax
-    return data_with_context
-
-def calculate_sf_h5(data_path, template_hndl, box_dim, chunk=(-5, None, 1), norm=1., crit=1.47, extra_flag=None):
-
-    """
-    Calculate the structure factor for a given HDF5 data file.
-    Uses the `sq_avx` module for efficient computation. See https://github.com/stekajack/espressoSq
-    """
-
-    import sq_avx
-
-    data_with_context = {}
-    data_file=h5py.File(data_path, "r")
-    data=H5DataSelector(data_file,particle_group="Filament")
-
-    wavevectors_container, intensities_container = [], []
-    start, end, step = chunk
-    for col in data.timestep[start:end:step].timestep:
-        posss = col.pos_folded
-        types = col.type.flatten()
-        mask = types != 5
-        posss = posss[mask]
-        wavevectors, intensities = sq_avx.calculate_structure_factor(
-            posss, 120, box_dim[0], 100, 40)
-        wavevectors_container.append(wavevectors)
-        intensities_container.append(intensities)
-
-    data_with_context[data_path] = wavevectors_container, intensities_container
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+    data_with_context[cfg.data_path] = len(data.timestep)
     return data_with_context

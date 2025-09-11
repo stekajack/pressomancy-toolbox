@@ -1,4 +1,5 @@
 import pmtools.refractored_toolbox as context
+from pmtools.resources.kernel_config import AnalysisConfig
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 import pickle
@@ -79,7 +80,10 @@ class Engine():
                         raise RuntimeError(f"Multiple futures were attempted to be created for the same location {loc_path}.")
                     Engine.event_horison.append(future_def)
                     self.local_event_horison_tags.append(future_def)
-                    future = self._executor_pool_hndl.submit(function_handle, loc_path, self.template_hndl, **self.kernel_kwargs[function_handle.__name__])
+                    cfg=AnalysisConfig(
+                        data_path=loc_path,
+                        template_hndl=self.template_hndl,**self.kernel_kwargs[function_handle.__name__])
+                    future = self._executor_pool_hndl.submit(function_handle, cfg)
                     futures[string_id].append(future)
                     self._flat_future_list.append(future)
             self._pool_global[function_handle.__name__] = futures

@@ -275,7 +275,7 @@ def get_cluster_iterator(data, edges_list, box_dim, min_part = 0, attibutes=['po
     assert len(data.timestep) == 1, "Data must contain exactly one timestep for cluster iteration."
     g2 = ig.Graph(n=len(data.particles), edges=edges_list)
     for att in attibutes:
-        g2.vs[att] = data.att
+        g2.vs[att] = getattr(data,att)
     g2.simplify()
     decomposition = g2.decompose(minelements=min_part)
     for subgraph in decomposition:

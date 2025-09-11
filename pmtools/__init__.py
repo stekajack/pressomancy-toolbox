@@ -1,0 +1,1 @@
+from pmtools.resources.kernel_config import AnalysisConfig
