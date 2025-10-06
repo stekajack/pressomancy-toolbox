@@ -58,6 +58,26 @@ def lp_projection(cfg: AnalysisConfig):
         accumulated_lp_seg, axis=0), xax
     return data_with_context  
 
+def magnetisation(cfg: AnalysisConfig):
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+    monomer_no = int(context.determine_key_val_from_filename(cfg.template_hndl,cfg.data_path,'what_monomer_number'))
+    accumulated_magnetisation = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
+        
+        pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
+
+        edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
+        graph_iterator=context.get_cluster_iterator(col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate), edges, cfg.box_dim,attibutes=['pos','dip'])
+        for subgraph in graph_iterator:
+            dipoles=np.mean(subgraph.vs['dip'],axis=0)[-1]/float(cfg.norm)
+            accumulated_magnetisation.append(dipoles)            
+    data_with_context[cfg.data_path] = accumulated_magnetisation
+    return data_with_context  
 
 def calculate_stacking_fraction(cfg: AnalysisConfig):
     
@@ -101,12 +121,10 @@ def calculate_sf(cfg: AnalysisConfig):
     wavevectors_container, intensities_container = [], []
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
-        posss = col.pos_folded
-        types = col.type.flatten()
-        mask = types != 5
-        posss = posss[mask]
+        mask=cfg.particle_predicate(col).flatten() # type: ignore
+        posss = col.pos_folded[mask]
         wavevectors, intensities = sq_avx.calculate_structure_factor(
-            posss, 120, cfg.box_dim[0], 100, 40)
+            posss, 360, cfg.box_dim[0], 100, 40)
         wavevectors_container.append(wavevectors)
         intensities_container.append(intensities)
 
