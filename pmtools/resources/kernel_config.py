@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template as StrTemplate
 
@@ -25,9 +25,9 @@ MaskPredicate: TypeAlias = Callable[[HasType], NDArray[np.bool_]]
 @dataclass(frozen=True)
 class AnalysisConfig:
     data_path: Path | str
-    template_hndl: StrTemplate | None  # make optional if some analyses don't need it
+    template_hndl: StrTemplate | None
     particle_group: str
-    box_dim: np.ndarray | Sequence[float]  # e.g. [Lx, Ly, Lz]
+    box_dim: np.ndarray | Sequence[float]
 
     # Time selection as a pythonic (start, end, step). Negative indices allowed.
     chunk: Tuple[Optional[int], Optional[int], int] = (-5, None, 1)
@@ -39,8 +39,14 @@ class AnalysisConfig:
 
     # Optional context for functions that need it
     particle_group_alt: str = ''
+    sq_params: dict = field(default_factory=lambda: {
+        'order': 10,
+        'orientations_per_wavevector': 100,
+        'subsample_every': 1,
+    })
 
     # Predicates (optional). Accept either a bool or a mask return.
     object_predicate: Predicate | None = None
     particle_predicate: Predicate | None = None
+
     path_to_output: Path | str = ''

@@ -4,7 +4,7 @@ from itertools import pairwise
 import pmtools.refractored_toolbox as context
 from pmtools.resources.kernel_config import AnalysisConfig
 from pressomancy.analysis import H5DataSelector
-from pressomancy.helper_functions import get_neighbours_cross_lattice
+from pressomancy.helper_functions import get_neighbours, get_neighbours_cross_lattice
 import h5py
 # object_predicate= lambda subset: not (subset.type == 5).any()
 # cfg.particle_predicate
@@ -124,7 +124,7 @@ def calculate_sf(cfg: AnalysisConfig):
         mask=cfg.particle_predicate(col).flatten() # type: ignore
         posss = col.pos_folded[mask]
         wavevectors, intensities = sq_avx.calculate_structure_factor(
-            posss, 360, cfg.box_dim[0], 100, 40)
+            posss, cfg.sq_params['order'], cfg.box_dim[0], cfg.sq_params['orientations_per_wavevector'], cfg.sq_params['subsample_every'])
         wavevectors_container.append(wavevectors)
         intensities_container.append(intensities)
 
@@ -135,8 +135,9 @@ def write_vtk_frame(cfg: AnalysisConfig, frame=-1):
     data_file=h5py.File(cfg.data_path, "r")
     data=H5DataSelector(data_file ,particle_group=cfg.particle_group)
     data_per_fram=data.timestep[frame]
-    positions=data_per_fram.pos_folded
-    dipoles=data_per_fram.dip
+    mask=cfg.particle_predicate(col).flatten()  # type: ignore
+    positions=data_per_fram.pos_folded[mask]
+    dipoles=data_per_fram.dip[mask]
     with open(cfg.path_to_output, 'w') as vtk:
         vtk.write("# vtk DataFile Version 2.0\n")
         vtk.write("particles\n")
@@ -154,6 +155,46 @@ def write_vtk_frame(cfg: AnalysisConfig, frame=-1):
             vtk.write("%f %f %f\n" % (
                 dipoles[i][0], dipoles[i][1], dipoles[i][2]))
     return 0
+
+def write_cluster_to_vtk(cfg: AnalysisConfig):
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+    monomer_no = int(context.determine_key_val_from_filename(cfg.template_hndl,cfg.data_path,'what_monomer_number'))
+    accumulated_magnetisation = []
+    start, end, step = cfg.chunk
+    for frame_id,col in enumerate(data.timestep[start:end:step].timestep):
+        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        posss = sel_dataview.pos
+        connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
+        edges=[]
+        for part,niegh_parts in connectivity_list.items():
+            for niegh in niegh_parts:
+                edges.append((part,niegh))
+        graph_iterator=context.get_cluster_iterator(sel_dataview, edges, cfg.box_dim,attibutes=['pos','dip'])
+        for cluster_id,subgraph in enumerate(graph_iterator):
+            positions=subgraph.vs['pos']
+            dipoles=subgraph.vs['dip']
+            local_file=f'{cfg.path_to_output}/cluster_{cluster_id}_frame_{frame_id}.vtk'
+            with open(local_file, 'w') as vtk:
+                vtk.write("# vtk DataFile Version 2.0\n")
+                vtk.write("particles\n")
+                vtk.write("ASCII\n")
+                vtk.write("DATASET UNSTRUCTURED_GRID\n")
+                vtk.write("POINTS {} floats\n".format(len(positions)))
+                for i in range(len(positions)):
+                    vtk.write("%f %f %f\n" %
+                                (positions[i][0], positions[i][1], positions[i][2]))
+                vtk.write("POINT_DATA {}\n".format(len(positions)))
+                vtk.write("SCALARS dipoles float 3\n")
+                vtk.write("LOOKUP_TABLE default\n")
+                for i in range(len(dipoles)):
+                    vtk.write("%f %f %f\n" % (
+                        dipoles[i][0], dipoles[i][1], dipoles[i][2]))
+        return 0   
+
+
+
 
 def get_data_timestep_len(cfg: AnalysisConfig):
     
