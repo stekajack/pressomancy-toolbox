@@ -6,9 +6,35 @@ from pmtools.resources.kernel_config import AnalysisConfig
 from pressomancy.analysis import H5DataSelector
 from pressomancy.helper_functions import get_neighbours, get_neighbours_cross_lattice
 import h5py
-# object_predicate= lambda subset: not (subset.type == 5).any()
-# cfg.particle_predicate
+
 def per_fil_gyr(cfg: AnalysisConfig):
+    """
+    Compute per-filament gyration tensors over a trajectory.
+
+    For each timestep (batched by ``cfg.chunk``), identifies filament objects
+    using the provided predicates, builds linear edges along each filament,
+    iterates over connected clusters via ``context.get_cluster_iterator``,
+    and accumulates :class:`~pmtools.resources.gryation_tensor.GyrationTensor`
+    objects from particle positions.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Analysis configuration with at least:
+        - ``data_path`` : path to HDF5 file.
+        - ``particle_group`` : HDF5 group name.
+        - ``object_predicate`` : callable taking a subset and returning a mask
+          (used to select filament objects).
+        - ``particle_predicate`` : callable producing a boolean mask for particles.
+        - ``box_dim`` : array-like box dimensions.
+        - ``chunk`` : tuple ``(start, end, step)`` for timestep slicing.
+
+    Returns
+    -------
+    dict
+        Mapping ``{cfg.data_path: List[GyrationTensor]}`` containing one
+        gyration tensor per yielded cluster across processed timesteps.
+    """
 
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
@@ -31,6 +57,27 @@ def per_fil_gyr(cfg: AnalysisConfig):
 
 
 def lp_projection(cfg: AnalysisConfig):
+    """
+    Compute the segment-wise projection onto the end-to-end vector (``ℓ_p`` proxy).
+
+    For each timestep, selects filaments, builds linear edges, iterates over
+    connected clusters, and computes the projection of consecutive monomer
+    center-of-mass segments onto the filament end-to-end vector.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Analysis configuration with fields used:
+        - ``data_path``, ``particle_group``, ``object_predicate``,
+          ``particle_predicate``, ``template_hndl``, ``box_dim``, ``chunk``.
+
+    Returns
+    -------
+    dict
+        ``{cfg.data_path: (mean_segment_projections, x_axis)}`` where
+        ``mean_segment_projections`` is the average projection over all
+        processed clusters/timesteps and ``x_axis`` is ``np.arange(monomer_no-1)+1``.
+    """
 
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
@@ -59,6 +106,26 @@ def lp_projection(cfg: AnalysisConfig):
     return data_with_context  
 
 def magnetisation(cfg: AnalysisConfig):
+    """
+    Compute mean dipole magnetisation per cluster per timestep.
+
+    For each timestep, constructs clusters for the selected filaments and
+    records the mean dipole vector (last component divided by ``cfg.norm``)
+    for each cluster.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Configuration with at least:
+        - ``data_path``, ``particle_group``, ``object_predicate``,
+          ``particle_predicate``, ``box_dim``, ``norm``, ``chunk``.
+
+    Returns
+    -------
+    dict
+        ``{cfg.data_path: List[float]}`` list of magnetisation values
+        accumulated over clusters and timesteps.
+    """
 
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
@@ -80,6 +147,27 @@ def magnetisation(cfg: AnalysisConfig):
     return data_with_context  
 
 def calculate_stacking_fraction(cfg: AnalysisConfig):
+    """
+    Identify ligand–stacking-site contacts across timesteps.
+
+    Selects stacking sites (type==4) and ligands (type==5) from two particle
+    groups, computes cross-lattice nearest neighbours within cutoff
+    ``cfg.crit`` using periodic boundary conditions, and returns the grouped
+    indices per timestep.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Requires:
+        - ``data_path``, ``particle_group``, ``particle_group_alt``,
+          ``box_dim``, ``crit``, ``chunk``.
+
+    Returns
+    -------
+    dict
+        ``{cfg.data_path: List[dict]}`` where each dict maps a ligand index
+        to indices of nearby stacking sites for each processed timestep.
+    """
     
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
@@ -104,12 +192,34 @@ def calculate_stacking_fraction(cfg: AnalysisConfig):
     data_with_context[cfg.data_path] = data_per_timestep
     return data_with_context
 
-
 def calculate_sf(cfg: AnalysisConfig):
-
     """
-    Calculate the structure factor for a given HDF5 data file.
-    Uses the `sq_avx` module for efficient computation. See https://github.com/stekajack/espressoSq
+    Calculate the static structure factor ``S(q)`` from selected particles.
+
+    Uses the external ``sq_avx`` library for fast evaluation. For each
+    timestep (batched by ``cfg.chunk``), applies ``cfg.particle_predicate`` to
+    select particles, then calls ``sq_avx.calculate_structure_factor`` with
+    parameters from ``cfg.sq_params``.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Required fields:
+        - ``data_path``, ``particle_group``, ``box_dim``, ``chunk``,
+          ``sq_params`` dict with keys:
+          ``'order'``, ``'orientations_per_wavevector'``, ``'subsample_every'``,
+        - ``particle_predicate`` callable.
+
+    Returns
+    -------
+    dict
+        ``{cfg.data_path: (wavevectors_container, intensities_container)}``,
+        where both entries are lists over processed timesteps.
+
+    Notes
+    -----
+    See the implementation of ``sq_avx`` at the referenced repository:
+    https://github.com/stekajack/espressoSq
     """
 
     import sq_avx
@@ -132,12 +242,31 @@ def calculate_sf(cfg: AnalysisConfig):
     return data_with_context  
 
 def write_vtk_frame(cfg: AnalysisConfig, frame=-1):
+    """
+    Write a single VTK file (ASCII, Unstructured Grid) for a selected frame.
+
+    Selects particles by ``cfg.particle_predicate`` in the given timestep and
+    writes positions and dipole vectors to ``cfg.path_to_output``.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Must include ``data_path``, ``particle_group``, ``particle_predicate``,
+        and ``path_to_output``.
+    frame : int, optional
+        Timestep index to export (default ``-1`` for the last).
+
+    Returns
+    -------
+    int
+        ``0`` on completion.
+    """
     data_file=h5py.File(cfg.data_path, "r")
     data=H5DataSelector(data_file ,particle_group=cfg.particle_group)
     data_per_fram=data.timestep[frame]
-    mask=cfg.particle_predicate(col).flatten()  # type: ignore
-    positions=data_per_fram.pos_folded[mask]
-    dipoles=data_per_fram.dip[mask]
+    sel_dataview=data_per_fram.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+    positions=sel_dataview.pos_folded
+    dipoles=sel_dataview.dip
     with open(cfg.path_to_output, 'w') as vtk:
         vtk.write("# vtk DataFile Version 2.0\n")
         vtk.write("particles\n")
@@ -157,7 +286,30 @@ def write_vtk_frame(cfg: AnalysisConfig, frame=-1):
     return 0
 
 def write_cluster_to_vtk(cfg: AnalysisConfig):
-    data_with_context = {}
+    """
+    Write VTK files for each detected cluster in each processed frame.
+
+    For every selected timestep, builds a connectivity graph using a neighbour
+    search (within ``cfg.crit`` and periodic box ``cfg.box_dim``), iterates
+    over clusters via ``context.get_cluster_iterator``, and writes particle
+    positions and dipoles for each cluster to individual VTK files in
+    ``cfg.path_to_output``.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Must define ``data_path``, ``particle_group``, ``particle_predicate``,
+        ``box_dim``, ``crit``, and ``path_to_output``.
+
+    Returns
+    -------
+    int
+        ``0`` on completion.
+
+    Notes
+    -----
+    The VTK files are named ``cluster_{cluster_id}_frame_{frame_id}.vtk``.
+    """
     data_file=h5py.File(cfg.data_path, "r")
     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
     monomer_no = int(context.determine_key_val_from_filename(cfg.template_hndl,cfg.data_path,'what_monomer_number'))
@@ -165,15 +317,15 @@ def write_cluster_to_vtk(cfg: AnalysisConfig):
     start, end, step = cfg.chunk
     for frame_id,col in enumerate(data.timestep[start:end:step].timestep):
         sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
-        posss = sel_dataview.pos
+        posss = sel_dataview.pos_folded
         connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
         edges=[]
         for part,niegh_parts in connectivity_list.items():
             for niegh in niegh_parts:
                 edges.append((part,niegh))
-        graph_iterator=context.get_cluster_iterator(sel_dataview, edges, cfg.box_dim,attibutes=['pos','dip'])
-        for cluster_id,subgraph in enumerate(graph_iterator):
-            positions=subgraph.vs['pos']
+        graph_iterator=context.get_cluster_iterator(sel_dataview, edges, cfg.box_dim, attibutes=['pos','pos_folded','dip'])
+        for cluster_id, subgraph in enumerate(graph_iterator):
+            positions=subgraph.vs['pos_folded_unbroken']
             dipoles=subgraph.vs['dip']
             local_file=f'{cfg.path_to_output}/cluster_{cluster_id}_frame_{frame_id}.vtk'
             with open(local_file, 'w') as vtk:
@@ -193,10 +345,20 @@ def write_cluster_to_vtk(cfg: AnalysisConfig):
                         dipoles[i][0], dipoles[i][1], dipoles[i][2]))
         return 0   
 
-
-
-
 def get_data_timestep_len(cfg: AnalysisConfig):
+    """
+    Get the number of timesteps in the selected particle group.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Must include ``data_path`` and ``particle_group``.
+
+    Returns
+    -------
+    dict
+        ``{cfg.data_path: int}`` mapping to the length of ``data.timestep``.
+    """
     
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
