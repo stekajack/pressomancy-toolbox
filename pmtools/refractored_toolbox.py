@@ -388,7 +388,7 @@ def get_cluster_iterator(
     edges_list: Sequence[Tuple[int, int]],
     box_dim: np.ndarray,
     min_part: int = 0,
-    attibutes: List[str] = ['pos',],
+    attibutes: List[str] = ['pos_folded',],
 ) -> Iterator[ig.Graph]:
     """
     Iterate over connected components (clusters) in a dataset.

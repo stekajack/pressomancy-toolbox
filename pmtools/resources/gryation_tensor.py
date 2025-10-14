@@ -180,6 +180,50 @@ class GyrationTensor:
         x,y,z=self._eigenvalues
         return 3/2*(x**2+y**2+z**2)/np.sum(self._eigenvalues)**2-1/2
 
+    def get_b(self) -> float:
+        """
+        Asphericity, :math:`b`.
+
+        Defined here as
+
+        .. math::
+
+            b = \\lambda_3 - \\frac{1}{2}(\\lambda_1 + \\lambda_2)
+
+        where :math:`\\lambda_i` are the eigenvalues of the gyration tensor.
+
+        Returns
+        -------
+        float
+            Measure of asphericity; zero for spherical objects, positive for
+            prolate (rod-like) objects, negative for oblate (disk-like) objects.
+        """
+        self._sanity_check()        
+        x,y,z=self._eigenvalues
+        return z-0.5*(x+y)
+    
+    def get_c(self) -> float:
+        """
+        Acylindricity, :math:`c`.
+
+        Defined here as
+
+        .. math::
+
+            c = \\lambda_2 - \\lambda_1
+
+        where :math:`\\lambda_i` are the eigenvalues of the gyration tensor.
+
+        Returns
+        -------
+        float
+            Measure of acylindricity; zero for cylindrical objects, positive
+            otherwise.
+        """
+        self._sanity_check()        
+        x,y,_=self._eigenvalues
+        return y-x
+
     def __repr__(self) -> str:
         """
         Official string representation.

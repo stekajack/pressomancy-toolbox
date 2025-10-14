@@ -4,7 +4,7 @@ from itertools import pairwise
 import pmtools.refractored_toolbox as context
 from pmtools.resources.kernel_config import AnalysisConfig
 from pressomancy.analysis import H5DataSelector
-from pressomancy.helper_functions import get_neighbours, get_neighbours_cross_lattice
+from pressomancy.helper_functions import get_neighbours, get_neighbours_cross_lattice, min_img_dist
 import h5py
 
 def per_fil_gyr(cfg: AnalysisConfig):
@@ -50,11 +50,122 @@ def per_fil_gyr(cfg: AnalysisConfig):
         edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
         graph_iterator=context.get_cluster_iterator(col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate), edges, cfg.box_dim)
         for subgraph in graph_iterator:
-            accumulated_gts.append(GyrationTensor(np.array(subgraph.vs['pos'])))
+            accumulated_gts.append(GyrationTensor(np.array(subgraph.vs['pos_folded_unbroken'])) )
        
     data_with_context[cfg.data_path] = accumulated_gts
     return data_with_context
 
+def per_cluster_gyr_tensor(cfg: AnalysisConfig):
+    """
+    Compute per-cluster gyration tensors over a trajectory.
+
+    For each timestep (batched by ``cfg.chunk``), builds cluster edges based on cuttoff, iterates over connected clusters via ``context.get_cluster_iterator``, and accumulates :class:`~pmtools.resources.gryation_tensor.GyrationTensor` objects from particle positions.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Analysis configuration with at least:
+        - ``data_path`` : path to HDF5 file.
+        - ``particle_group`` : HDF5 group name.
+        - ``particle_predicate`` : callable producing a boolean mask for particles.
+        - ``box_dim`` : array-like box dimensions.
+        - ``chunk`` : tuple ``(start, end, step)`` for timestep slicing.
+
+    Returns
+    -------
+    dict
+        Mapping ``{cfg.data_path: List[GyrationTensor]}`` containing one
+        gyration tensor per yielded cluster across processed timesteps.
+    """
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file, particle_group=cfg.particle_group)
+    accumulated_gts = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        posss = sel_dataview.pos_folded
+        connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
+        edges=[]
+        for part,niegh_parts in connectivity_list.items():
+            for niegh in niegh_parts:
+                edges.append((part,niegh))
+        graph_iterator=context.get_cluster_iterator(sel_dataview, edges, cfg.box_dim, min_part=20)
+        for subgraph in graph_iterator:
+            accumulated_gts.append(GyrationTensor(np.array(subgraph.vs['pos_folded_unbroken'])) )
+       
+    data_with_context[cfg.data_path] = accumulated_gts
+    return data_with_context
+
+def cluster_size(cfg: AnalysisConfig):
+    """
+    Compute per-cluster gyration tensors over a trajectory.
+
+    For each timestep (batched by ``cfg.chunk``), builds cluster edges based on cuttoff, iterates over connected clusters via ``context.get_cluster_iterator``, and accumulates :class:`~pmtools.resources.gryation_tensor.GyrationTensor` objects from particle positions.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Analysis configuration with at least:
+        - ``data_path`` : path to HDF5 file.
+        - ``particle_group`` : HDF5 group name.
+        - ``particle_predicate`` : callable producing a boolean mask for particles.
+        - ``box_dim`` : array-like box dimensions.
+        - ``chunk`` : tuple ``(start, end, step)`` for timestep slicing.
+
+    Returns
+    -------
+    dict
+        Mapping ``{cfg.data_path: List[GyrationTensor]}`` containing one
+        gyration tensor per yielded cluster across processed timesteps.
+    """
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file, particle_group=cfg.particle_group)
+    accumulated_gts = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        posss = sel_dataview.pos_folded
+        connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
+        edges=[]
+        for part,niegh_parts in connectivity_list.items():
+            for niegh in niegh_parts:
+                edges.append((part,niegh))
+        graph_iterator=context.get_cluster_iterator(sel_dataview, edges, cfg.box_dim, min_part=20)
+        tmpss=[]
+        for subgraph in graph_iterator:
+            tmpss.append(len(subgraph.vs))
+        accumulated_gts.append(tmpss)
+       
+    data_with_context[cfg.data_path] = accumulated_gts
+    return data_with_context
+
+def pair_distances(cfg: AnalysisConfig):
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file, particle_group=cfg.particle_group)
+    accumulated_gts = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        posss = sel_dataview.pos_folded
+        connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
+        edges=[]
+        for part,niegh_parts in connectivity_list.items():
+            for niegh in niegh_parts:
+                edges.append((part,niegh))
+        graph_iterator=context.get_cluster_iterator(sel_dataview, edges, cfg.box_dim, min_part=20)
+        for subgraph in graph_iterator:
+            for vertex in subgraph.vs:
+                for neighbor in subgraph.neighbors(vertex):
+                    accumulated_gts.append(np.linalg.norm(min_img_dist(vertex['pos_folded'],subgraph.vs[neighbor]['pos_folded'], cfg.box_dim)))
+       
+    data_with_context[cfg.data_path] = accumulated_gts
+    return data_with_context
 
 def lp_projection(cfg: AnalysisConfig):
     """
@@ -130,7 +241,6 @@ def magnetisation(cfg: AnalysisConfig):
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
-    monomer_no = int(context.determine_key_val_from_filename(cfg.template_hndl,cfg.data_path,'what_monomer_number'))
     accumulated_magnetisation = []
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
@@ -139,7 +249,7 @@ def magnetisation(cfg: AnalysisConfig):
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
 
         edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
-        graph_iterator=context.get_cluster_iterator(col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate), edges, cfg.box_dim,attibutes=['pos','dip'])
+        graph_iterator=context.get_cluster_iterator(col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate), edges, cfg.box_dim, attibutes=['pos_folded','dip'])
         for subgraph in graph_iterator:
             dipoles=np.mean(subgraph.vs['dip'],axis=0)[-1]/float(cfg.norm)
             accumulated_magnetisation.append(dipoles)            
@@ -267,7 +377,10 @@ def write_vtk_frame(cfg: AnalysisConfig, frame=-1):
     sel_dataview=data_per_fram.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
     positions=sel_dataview.pos_folded
     dipoles=sel_dataview.dip
-    with open(cfg.path_to_output, 'w') as vtk:
+    simss=cfg.data_path.split('/')[6]
+    frfr=cfg.data_path.split('/')[-1].strip('.h5')
+    local_file=f'{cfg.path_to_output}/{frfr}_{simss}.vtk'
+    with open(local_file, 'w') as vtk:
         vtk.write("# vtk DataFile Version 2.0\n")
         vtk.write("particles\n")
         vtk.write("ASCII\n")
@@ -312,8 +425,6 @@ def write_cluster_to_vtk(cfg: AnalysisConfig):
     """
     data_file=h5py.File(cfg.data_path, "r")
     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
-    monomer_no = int(context.determine_key_val_from_filename(cfg.template_hndl,cfg.data_path,'what_monomer_number'))
-    accumulated_magnetisation = []
     start, end, step = cfg.chunk
     for frame_id,col in enumerate(data.timestep[start:end:step].timestep):
         sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
