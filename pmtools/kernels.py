@@ -6,6 +6,9 @@ from pmtools.resources.kernel_config import AnalysisConfig
 from pressomancy.analysis import H5DataSelector
 from pressomancy.helper_functions import get_neighbours, get_neighbours_cross_lattice, min_img_dist
 import h5py
+import igraph as ig
+from pmtools.refractored_toolbox_legacy import pair_potential
+import vg
 
 def per_fil_gyr(cfg: AnalysisConfig):
     """
@@ -167,6 +170,59 @@ def pair_distances(cfg: AnalysisConfig):
     data_with_context[cfg.data_path] = accumulated_gts
     return data_with_context
 
+def mlp_projection(cfg: AnalysisConfig):
+    """
+    Compute the segment-wise projection onto the end-to-end vector (``ℓ_p`` proxy).
+
+    For each timestep, selects filaments, builds linear edges, iterates over
+    connected clusters, and computes the projection of consecutive monomer
+    center-of-mass segments onto the filament end-to-end vector.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Analysis configuration with fields used:
+        - ``data_path``, ``particle_group``, ``object_predicate``,
+          ``particle_predicate``, ``template_hndl``, ``box_dim``, ``chunk``.
+
+    Returns
+    -------
+    dict
+        ``{cfg.data_path: (mean_segment_projections, x_axis)}`` where
+        ``mean_segment_projections`` is the average projection over all
+        processed clusters/timesteps and ``x_axis`` is ``np.arange(monomer_no-1)+1``.
+    """
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+    monomer_no = int(context.determine_key_val_from_filename(cfg.template_hndl,cfg.data_path,'what_monomer_number'))
+    accumulated_lp_seg = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
+        part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
+        
+        pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
+        pf_indices = [list(range(x, x + 20))
+                                  for x in range(0, len(part_sel.particles), 20)]
+        # print(pf_indices)
+
+        edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
+        graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim, attibutes=['pos_folded','dip'])
+        for subgraph in graph_iterator:
+            positions=np.array(subgraph.vs['pos_folded_unbroken'])
+            dipoles=np.array(subgraph.vs['dip'])
+            com_pos = np.mean(positions.reshape(monomer_no, -1, 3), axis=1)
+            ete_vec = com_pos[-1]-com_pos[0]
+            dipole_norms = np.mean(np.linalg.norm(dipoles, axis=1))
+            res_dip = np.dot(dipoles, ete_vec)/pow(dipole_norms,2)
+            accumulated_lp_seg.append(res_dip)            
+    xax = np.arange(monomer_no)+1
+    data_with_context[cfg.data_path] = np.mean(
+        accumulated_lp_seg, axis=0), xax
+    return data_with_context
+
 def lp_projection(cfg: AnalysisConfig):
     """
     Compute the segment-wise projection onto the end-to-end vector (``ℓ_p`` proxy).
@@ -198,13 +254,17 @@ def lp_projection(cfg: AnalysisConfig):
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
         fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
+        part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
         
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
+        pf_indices = [list(range(x, x + 20))
+                                  for x in range(0, len(part_sel.particles), 20)]
+        # print(pf_indices)
 
         edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
-        graph_iterator=context.get_cluster_iterator(col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate), edges, cfg.box_dim)
+        graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim, attibutes=['pos_folded','dip'])
         for subgraph in graph_iterator:
-            positions=np.array(subgraph.vs['pos'])
+            positions=np.array(subgraph.vs['pos_folded_unbroken'])
             com_pos = np.mean(positions.reshape(monomer_no, -1, 3), axis=1)
             ete_vec = com_pos[-1]-com_pos[0]
             segments = np.diff(com_pos, axis=0)
@@ -217,6 +277,7 @@ def lp_projection(cfg: AnalysisConfig):
     return data_with_context  
 
 def magnetisation(cfg: AnalysisConfig):
+
     """
     Compute mean dipole magnetisation per cluster per timestep.
 
@@ -237,6 +298,23 @@ def magnetisation(cfg: AnalysisConfig):
         ``{cfg.data_path: List[float]}`` list of magnetisation values
         accumulated over clusters and timesteps.
     """
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+    accumulated_magnetisation = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
+        pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
+        edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
+        graph_iterator=context.get_cluster_iterator(col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate), edges, cfg.box_dim, attibutes=['pos_folded','dip'])
+        for subgraph in graph_iterator:
+            dipoles=np.mean(subgraph.vs['dip'],axis=0)[-1]/float(cfg.norm)
+            accumulated_magnetisation.append(dipoles)            
+    data_with_context[cfg.data_path] = accumulated_magnetisation
+    return data_with_context 
+
+def magn_princip_angle_dist(cfg: AnalysisConfig):
 
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
@@ -245,16 +323,81 @@ def magnetisation(cfg: AnalysisConfig):
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
         fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
-        
+        part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
-
+        pf_indices = [list(range(x, x + 20))
+                                  for x in range(0, len(part_sel.particles), 20)]
         edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
-        graph_iterator=context.get_cluster_iterator(col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate), edges, cfg.box_dim, attibutes=['pos_folded','dip'])
+        graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim, attibutes=['pos_folded','dip'])
+        reference=np.array([0,0,1])
+        for subgraph in graph_iterator:
+            chain_dip_mom=np.mean(subgraph.vs['dip'],axis=0)/float(cfg.norm)
+            gt=GyrationTensor(np.array(subgraph.vs['pos_folded_unbroken'])) 
+            res_angle=vg.angle(chain_dip_mom,vg.aligned_with(gt.eigenvectors[-1], reference, reverse=False), units='deg')
+            accumulated_magnetisation.append(np.minimum(res_angle, 180 - res_angle))            
+    data_with_context[cfg.data_path] = accumulated_magnetisation
+    return data_with_context 
+
+def magnetisation_culster_size(cfg: AnalysisConfig):
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+    accumulated_magnetisation = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        posss = sel_dataview.pos_folded
+        connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
+        edges=[]
+        for part,niegh_parts in connectivity_list.items():
+            for niegh in niegh_parts:
+                edges.append((part,niegh))
+        graph_iterator=context.get_cluster_iterator(sel_dataview, edges, cfg.box_dim, min_part=20,attibutes=['pos_folded','dip'])
         for subgraph in graph_iterator:
             dipoles=np.mean(subgraph.vs['dip'],axis=0)[-1]/float(cfg.norm)
-            accumulated_magnetisation.append(dipoles)            
+            accumulated_magnetisation.append((len(subgraph.vs),dipoles))            
     data_with_context[cfg.data_path] = accumulated_magnetisation
-    return data_with_context  
+    return data_with_context 
+
+def degree_magnetisation(cfg: AnalysisConfig):
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+    accumulated_magnetisation = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        posss = sel_dataview.pos_folded
+        connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
+        edges=[]
+        for part,niegh_parts in connectivity_list.items():
+            for niegh in niegh_parts:
+                edges.append((part,niegh))
+        g2 = ig.Graph(n=len(data.particles), edges=edges)
+        attibutes=['pos_folded','dip']
+        for att in attibutes:
+            g2.vs[att] = getattr(data,att)
+        g2.simplify()
+        edges_list=g2.get_edgelist()
+        edges_filtered=[]
+        for x,y in edges_list:
+            print(x,y)
+            print(np.shape(g2.vs[x]['pos_folded']))
+            res=pair_potential(min_img_dist(g2.vs[x]['pos_folded'], g2.vs[y]['pos_folded'], cfg.box_dim), g2.vs[x]['dip'], g2.vs[y]['dip'])
+            if res <=-0.1:
+                edges_filtered.append((x,y))
+        g3 = ig.Graph(n=len(data.particles), edges=edges_filtered)
+        attibutes=['pos_folded','dip']
+        for att in attibutes:
+            g3.vs[att] = getattr(data,att)
+        g3.simplify()
+        graph_iterator=context.get_cluster_iterator(sel_dataview, edges, cfg.box_dim, min_part=20,attibutes=['pos_folded','dip'])
+        for verterx in g3.vs:
+            accumulated_magnetisation.append((len(verterx.neighbors()),verterx['dip'][-1]))            
+    data_with_context[cfg.data_path] = accumulated_magnetisation
+    return data_with_context     
 
 def calculate_stacking_fraction(cfg: AnalysisConfig):
     """
