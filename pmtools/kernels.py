@@ -223,6 +223,84 @@ def mlp_projection(cfg: AnalysisConfig):
         accumulated_lp_seg, axis=0), xax
     return data_with_context
 
+# def easy_dipmom_angle(cfg: AnalysisConfig):
+    
+#     data_with_context = {}
+#     data_file=h5py.File(cfg.data_path, "r")
+#     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+#     monomer_no = int(context.determine_key_val_from_filename(cfg.template_hndl,cfg.data_path,'what_monomer_number'))
+#     accumulated_lp_seg = []
+#     start, end, step = cfg.chunk
+#     for col in data.timestep[start:end:step].timestep:
+#         fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
+#         part_sel_mag=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
+
+#         def select_easy(subset):
+#             return subset.type == 2
+        
+#         part_sel_easy=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids, predicate=select_easy)
+        
+#         pf_indices_mag = [list(range(x, x + 20))
+#                                   for x in range(0, len(part_sel_mag.particles), 20)]
+#         pf_indices_easy = [list(range(x, x + 40))
+#                                   for x in range(0, len(part_sel_easy.particles), 40)]
+#         edges_mag = [(int(x), int(y)) for pf_el in pf_indices_mag for x,y in pairwise(pf_el)]
+#         edges_easy = [(int(x), int(y)) for pf_el in pf_indices_easy for x,y in pairwise(pf_el)]
+#         assert np.shape(pf_indices_easy)==(210,40), "Expected 210 easy filaments of 40 particles each"
+#         graph_iterator_mag=context.get_cluster_iterator(part_sel_mag, edges_mag, cfg.box_dim, attibutes=['pos_folded','dip'], min_part=20)
+#         graph_iterator_easy=context.get_cluster_iterator(part_sel_easy, edges_easy, cfg.box_dim, attibutes=['pos_folded',], min_part=40)
+#         for subgraph_mag, subgraph_easy in zip(graph_iterator_mag,graph_iterator_easy):
+#             positions=np.array(subgraph_easy.vs['pos_folded_unbroken'])
+#             assert np.shape(positions)==(40,3), "Expected 40 particles per easy filament"
+#             p1 = positions[0::2]      # indices 0,2,4,...
+#             p2 = positions[1::2]      # indices 1,3,5,...
+#             segments = p2 - p1      # shape (20, 3)
+           
+#             seg_norms = np.linalg.norm(segments, axis=1)
+#             assert all(seg_norms<3.), f"Segment norm too large, something is wrong! seg_norms={seg_norms}"
+#             segments = segments / seg_norms[:, None]
+#             dipoles=np.array(subgraph_mag.vs['dip'])
+#             dipole_norms = np.linalg.norm(dipoles, axis=1)
+#             dipoles=dipoles/dipole_norms[:, None]
+#             res_cors = np.einsum('ij,ij->i', dipoles, segments) 
+#             accumulated_lp_seg.extend(res_cors)            
+#     data_with_context[cfg.data_path] = accumulated_lp_seg
+#     return data_with_context
+
+
+def easy_dipmom_angle(cfg: AnalysisConfig):
+    
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+    accumulated_lp_seg = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
+        for filament_id in fitered_fil_ids:
+
+            part_sel_mag=col.select_particles_by_object(cfg.particle_group, filament_id,predicate=cfg.particle_predicate)
+
+            def select_easy(subset):
+                return subset.type == 2
+            
+            part_sel_easy=col.select_particles_by_object(cfg.particle_group, filament_id, predicate=select_easy)
+            positions=np.array(part_sel_easy.pos_folded)
+            assert np.shape(positions)==(40,3), "Expected 40 particles per easy filament"
+            p1 = positions[:20]       # indices 0–19
+            p2 = positions[20:]       # indices 20–39
+            segments = min_img_dist(p2,p1, cfg.box_dim)
+            seg_norms = np.linalg.norm(segments, axis=1)
+            assert all(seg_norms<2.), f"Segment norm too large, something is wrong! seg_norms={seg_norms}"
+            segments = segments / seg_norms[:, None]
+            dipoles=np.array(part_sel_mag.dip)
+            dipole_norms = np.linalg.norm(dipoles, axis=1)
+            dipoles=dipoles/dipole_norms[:, None]
+            res_cors = np.einsum('ij,ij->i', dipoles, segments) 
+            accumulated_lp_seg.extend(res_cors)            
+    data_with_context[cfg.data_path] = accumulated_lp_seg
+    return data_with_context
+
 def lp_projection(cfg: AnalysisConfig):
     """
     Compute the segment-wise projection onto the end-to-end vector (``ℓ_p`` proxy).
@@ -492,7 +570,89 @@ def calculate_sf(cfg: AnalysisConfig):
         intensities_container.append(intensities)
 
     data_with_context[cfg.data_path] = wavevectors_container, intensities_container
-    return data_with_context  
+    return data_with_context
+
+def calculate_rdf(cfg: AnalysisConfig):
+
+    import pyscal as pc
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+
+    wavevectors_container, intensities_container = [], []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        mask=cfg.particle_predicate(col).flatten() # type: ignore
+        posss = col.pos_folded[mask]
+        sys = pc.System()
+        sys.box = [
+            [cfg.box_dim[0], 0.0, 0.0],
+            [0.0, cfg.box_dim[1], 0.0],
+            [0.0, 0.0, cfg.box_dim[2]]]
+        sys.atoms = [pc.Atom(pos=pos_el, id=id_el)
+                        for id_el, pos_el in enumerate(posss)]
+        wavevectors, intensities = sys.calculate_rdf(
+            histobins=int((cfg.box_dim[0]*0.5)/0.25), histomax=cfg.box_dim[0]*0.5)
+        wavevectors_container.append(wavevectors)
+        intensities_container.append(intensities)
+        
+    data_with_context[cfg.data_path] = wavevectors_container, intensities_container
+    return data_with_context
+
+def calculate_volume_voronoi(cfg: AnalysisConfig):
+
+    import pyscal as pc
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+
+    res_containter=[]
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        mask=cfg.particle_predicate(col).flatten() # type: ignore
+        posss = col.pos_folded[mask]
+        sys = pc.System()
+        sys.box = [
+            [cfg.box_dim[0], 0.0, 0.0],
+            [0.0, cfg.box_dim[1], 0.0],
+            [0.0, 0.0, cfg.box_dim[2]]]
+        sys.atoms = [pc.Atom(pos=pos_el, id=id_el)
+                        for id_el, pos_el in enumerate(posss)]
+        sys.find_neighbors(method='voronoi')
+        vor_vol = [atom.volume for atom in sys.atoms]
+
+        res_containter.append(vor_vol)
+    data_with_context[cfg.data_path] = res_containter
+    return data_with_context     
+
+def calculate_voronoi_vects(cfg: AnalysisConfig):
+
+    import pyscal as pc
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+
+    res_containter=[]
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        mask=cfg.particle_predicate(col).flatten() # type: ignore
+        posss = col.pos_folded[mask]
+        sys = pc.System()
+        sys.box = [
+            [cfg.box_dim[0], 0.0, 0.0],
+            [0.0, cfg.box_dim[1], 0.0],
+            [0.0, 0.0, cfg.box_dim[2]]]
+        sys.atoms = [pc.Atom(pos=pos_el, id=id_el)
+                        for id_el, pos_el in enumerate(posss)]
+        sys.find_neighbors(method='voronoi')
+        sys.calculate_vorovector()
+        vor_vec = [atom.vorovector for atom in sys.atoms]
+        res_containter.append(vor_vec)
+    data_with_context[cfg.data_path] = res_containter
+    return data_with_context     
 
 def write_vtk_frame(cfg: AnalysisConfig, frame=-1):
     """
