@@ -650,9 +650,91 @@ def calculate_voronoi_vects(cfg: AnalysisConfig):
         sys.find_neighbors(method='voronoi')
         sys.calculate_vorovector()
         vor_vec = [atom.vorovector for atom in sys.atoms]
-        res_containter.append(vor_vec)
+        res_containter.extend(vor_vec)
     data_with_context[cfg.data_path] = res_containter
-    return data_with_context     
+    return data_with_context 
+
+def calculate_voronoi_face_perimeters(cfg: AnalysisConfig):
+
+    import pyscal as pc
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+
+    res_containter=[]
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        mask=cfg.particle_predicate(col).flatten() # type: ignore
+        posss = col.pos_folded[mask]
+        sys = pc.System()
+        sys.box = [
+            [cfg.box_dim[0], 0.0, 0.0],
+            [0.0, cfg.box_dim[1], 0.0],
+            [0.0, 0.0, cfg.box_dim[2]]]
+        sys.atoms = [pc.Atom(pos=pos_el, id=id_el)
+                        for id_el, pos_el in enumerate(posss)]
+        sys.find_neighbors(method='voronoi')
+        sys.calculate_vorovector()
+        face_perimeters = [atom.face_perimeters for atom in sys.atoms]
+        res_containter.extend(face_perimeters)
+    data_with_context[cfg.data_path] = res_containter
+    return data_with_context 
+
+def calculate_voronoi_no_of_edges(cfg: AnalysisConfig):
+
+    import pyscal as pc
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+
+    res_containter=[]
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        mask=cfg.particle_predicate(col).flatten() # type: ignore
+        posss = col.pos_folded[mask]
+        sys = pc.System()
+        sys.box = [
+            [cfg.box_dim[0], 0.0, 0.0],
+            [0.0, cfg.box_dim[1], 0.0],
+            [0.0, 0.0, cfg.box_dim[2]]]
+        sys.atoms = [pc.Atom(pos=pos_el, id=id_el)
+                        for id_el, pos_el in enumerate(posss)]
+        sys.find_neighbors(method='voronoi')
+        sys.calculate_vorovector()
+        no_of_edges = [atom.no_of_edges for atom in sys.atoms]
+        res_containter.extend(no_of_edges)
+    data_with_context[cfg.data_path] = res_containter
+    return data_with_context
+
+def calculate_voronoi_vertex_vectors(cfg: AnalysisConfig):
+
+    import pyscal as pc
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+
+    res_containter=[]
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        mask=cfg.particle_predicate(col).flatten() # type: ignore
+        posss = col.pos_folded[mask]
+        sys = pc.System()
+        sys.box = [
+            [cfg.box_dim[0], 0.0, 0.0],
+            [0.0, cfg.box_dim[1], 0.0],
+            [0.0, 0.0, cfg.box_dim[2]]]
+        sys.atoms = [pc.Atom(pos=pos_el, id=id_el)
+                        for id_el, pos_el in enumerate(posss)]
+        sys.find_neighbors(method='voronoi')
+        sys.calculate_vorovector()
+        vertex_vectors = [atom.vertex_vectors for atom in sys.atoms]
+        res_containter.extend(vertex_vectors)
+    data_with_context[cfg.data_path] = res_containter
+    return data_with_context   
+    
 
 def write_vtk_frame(cfg: AnalysisConfig, frame=-1):
     """
