@@ -1,3 +1,4 @@
+from pathlib import Path
 from pmtools.resources.gryation_tensor import GyrationTensor
 import numpy as np
 from itertools import pairwise
@@ -598,6 +599,133 @@ def calculate_rdf(cfg: AnalysisConfig):
         intensities_container.append(intensities)
         
     data_with_context[cfg.data_path] = wavevectors_container, intensities_container
+    return data_with_context
+
+
+def write_vtf_from_particles(particles, box_dim, out_path):
+    """
+    Write a minimal VTF file for VMD from (id, position, type) tuples.
+    """
+    out_path = Path(out_path)
+    particles = list(particles)
+
+    if not particles:
+        out_path.write_text("vtf 1.00\n")
+        return out_path
+
+    positions = np.array([p[1] for p in particles], dtype=float)
+    types = [int(p[2]) for p in particles]
+
+    lines = []
+    lines.append(f"unitcell {box_dim[0]} {box_dim[1]} {box_dim[2]}\n")
+    lines.append(f"atom 0:{len(particles)-1} radius 0.5 name A\n")
+    for idx, t in enumerate(types):
+        lines.append(f"atom {idx} type {t}\n")
+    lines.append("timestep\n")
+    for x, y, z in positions:
+        lines.append(f"{x:.6f} {y:.6f} {z:.6f}\n")
+
+    out_path.write_text("".join(lines))
+    return out_path
+
+
+def mega_giga_analysis(cfg: AnalysisConfig):
+    import pyscal as pc
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        predicate_mask=cfg.particle_predicate(col).flatten() # type: ignore
+        posss = col.pos_folded[predicate_mask]
+        sys = pc.System()
+        sys.box = [
+            [cfg.box_dim[0], 0.0, 0.0],
+            [0.0, cfg.box_dim[1], 0.0],
+            [0.0, 0.0, cfg.box_dim[2]]]
+        sys.atoms = [pc.Atom(pos=pos_el, id=id_el)
+                        for id_el, pos_el in enumerate(posss)]
+        sys.find_neighbors(method='voronoi')
+        atom_ids= np.array([atom.id for atom in sys.atoms])
+        vor_vol = np.array([atom.volume for atom in sys.atoms])
+        valid_mask=vor_vol<20
+        face_perimeters = [atom.face_perimeters for atom in sys.atoms]
+        voronoi_face_perimeters_data_selected=[len(x) for id,x in enumerate(face_perimeters) if valid_mask[id]]
+        no_of_edges = [atom.no_of_edges for atom in sys.atoms]
+        voronoi_no_of_edges_data_selected=[x for id,x in enumerate(no_of_edges) if valid_mask[id]]
+        vertex_vectors = [atom.vertex_vectors for atom in sys.atoms]
+        voronoi_vertex_vectors_data_selected=[x for id,x in enumerate(vertex_vectors) if valid_mask[id]]
+        voronoi_vertex_vectors_data_selected=[len(x)/3 for x in voronoi_vertex_vectors_data_selected]
+        V = np.array(voronoi_vertex_vectors_data_selected)           # shape (N,)
+        E = np.array(voronoi_no_of_edges_data_selected)              # shape (N,)
+        F = np.array(voronoi_face_perimeters_data_selected)          # shape (N,)
+
+        xi=V-E+F
+        assert all(xi==2),'cant have non-covex voronoi cells!'
+
+        if len(V):
+            # Pack into structured array of shape (N, 3)
+            polyhedra = np.stack([V, E, F], axis=1)   # shape (N,3)
+
+            # Get unique (V,E,F) triples and their counts
+            unique_polyhedra, counts = np.unique(polyhedra, axis=0, return_counts=True)
+
+            # Probabilities / frequencies
+            probs = counts / counts.sum()
+
+            # Sort by probability descending
+            idx = np.argsort(probs)[::-1]
+            unique_polyhedra = unique_polyhedra[idx]
+            probs = probs[idx]
+            print('unique_polyhedra: ',unique_polyhedra)
+            print('probs: ',probs)
+
+        else:
+            polyhedra = np.empty((0, 3))
+            unique_polyhedra = np.empty((0, 3))
+            probs = np.array([])
+
+        # Enumerate the six most probable unique polyhedra starting at 347
+        top_k = min(6, len(unique_polyhedra))
+        enumerated_polyhedra = []
+        enumeration_lookup = {}
+        for offset, poly in enumerate(unique_polyhedra[:top_k]):
+            enum_value = 347 + offset
+            poly_key = tuple(int(val) for val in poly)
+            enumerated_polyhedra.append((enum_value, poly_key))
+            enumeration_lookup[poly_key] = enum_value
+
+        # Map each selected particle id to its polyhedron and enumerated type
+        print('enumeration_lookup:', enumeration_lookup)
+        particle_polyhedra_types = []
+        particles_for_vtf = []
+        poly_idx = 0
+        for atom_id, pos, is_valid in zip(atom_ids.tolist(), posss.tolist(), valid_mask.tolist()):
+            if is_valid and poly_idx < len(polyhedra):
+                poly = polyhedra[poly_idx]
+                poly_idx += 1
+                poly_key = tuple(int(val) for val in poly)
+                enum_value = enumeration_lookup.get(poly_key, 1)
+            else:
+                poly_key = (-1, -1, -1)
+                enum_value = 765
+            particle_polyhedra_types.append((int(atom_id), poly_key, int(enum_value)))
+            particles_for_vtf.append((int(atom_id), tuple(float(x) for x in pos), int(enum_value)))
+
+        if top_k:
+            assert probs[:top_k].sum()>0.8
+        vtf_out = Path(cfg.path_to_output) if cfg.path_to_output else Path(cfg.data_path).with_suffix('.vtf')
+        write_vtf_from_particles(particles_for_vtf, cfg.box_dim, vtf_out)
+        data_with_context[cfg.data_path] = {
+            'top_polyhedra': enumerated_polyhedra,
+            'particle_polyhedra_types': particle_polyhedra_types,
+            'probabilities': probs[:top_k],
+            'vtf_path': vtf_out,
+        }
+        break
+
     return data_with_context
 
 def calculate_volume_voronoi(cfg: AnalysisConfig):
