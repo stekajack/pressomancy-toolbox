@@ -10,6 +10,7 @@ import h5py
 import igraph as ig
 from pmtools.refractored_toolbox_legacy import pair_potential
 import vg
+import warnings
 
 def per_fil_gyr(cfg: AnalysisConfig):
     """
@@ -88,7 +89,8 @@ def per_cluster_gyr_tensor(cfg: AnalysisConfig):
     accumulated_gts = []
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
-        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        connectivity_values = col.get_connectivity_values(cfg.particle_group)
+        sel_dataview=col.select_particles_by_object(cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
         posss = sel_dataview.pos_folded
         connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
         edges=[]
@@ -131,7 +133,8 @@ def cluster_size(cfg: AnalysisConfig):
     accumulated_gts = []
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
-        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        connectivity_values = col.get_connectivity_values(cfg.particle_group)
+        sel_dataview=col.select_particles_by_object(cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
         posss = sel_dataview.pos_folded
         connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
         edges=[]
@@ -148,6 +151,13 @@ def cluster_size(cfg: AnalysisConfig):
     return data_with_context
 
 def pair_distances(cfg: AnalysisConfig):
+    """
+    Measure neighbour-pair distances within selected particle clusters.
+
+    Particles are selected with ``cfg.particle_predicate`` and linked by
+    ``cfg.crit`` using periodic boundaries. The returned list contains one
+    minimum-image distance for each graph edge inside each detected cluster.
+    """
 
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
@@ -155,7 +165,8 @@ def pair_distances(cfg: AnalysisConfig):
     accumulated_gts = []
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
-        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        connectivity_values = col.get_connectivity_values(cfg.particle_group)
+        sel_dataview=col.select_particles_by_object(cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
         posss = sel_dataview.pos_folded
         connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
         edges=[]
@@ -205,8 +216,8 @@ def mlp_projection(cfg: AnalysisConfig):
         part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
         
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
-        pf_indices = [list(range(x, x + 20))
-                                  for x in range(0, len(part_sel.particles), 20)]
+        pf_indices = [list(range(x, x + monomer_no))
+                                  for x in range(0, len(part_sel.particles), monomer_no)]
         # print(pf_indices)
 
         edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
@@ -224,53 +235,27 @@ def mlp_projection(cfg: AnalysisConfig):
         accumulated_lp_seg, axis=0), xax
     return data_with_context
 
-# def easy_dipmom_angle(cfg: AnalysisConfig):
-    
-#     data_with_context = {}
-#     data_file=h5py.File(cfg.data_path, "r")
-#     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
-#     monomer_no = int(context.determine_key_val_from_filename(cfg.template_hndl,cfg.data_path,'what_monomer_number'))
-#     accumulated_lp_seg = []
-#     start, end, step = cfg.chunk
-#     for col in data.timestep[start:end:step].timestep:
-#         fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
-#         part_sel_mag=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
-
-#         def select_easy(subset):
-#             return subset.type == 2
-        
-#         part_sel_easy=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids, predicate=select_easy)
-        
-#         pf_indices_mag = [list(range(x, x + 20))
-#                                   for x in range(0, len(part_sel_mag.particles), 20)]
-#         pf_indices_easy = [list(range(x, x + 40))
-#                                   for x in range(0, len(part_sel_easy.particles), 40)]
-#         edges_mag = [(int(x), int(y)) for pf_el in pf_indices_mag for x,y in pairwise(pf_el)]
-#         edges_easy = [(int(x), int(y)) for pf_el in pf_indices_easy for x,y in pairwise(pf_el)]
-#         assert np.shape(pf_indices_easy)==(210,40), "Expected 210 easy filaments of 40 particles each"
-#         graph_iterator_mag=context.get_cluster_iterator(part_sel_mag, edges_mag, cfg.box_dim, attibutes=['pos_folded','dip'], min_part=20)
-#         graph_iterator_easy=context.get_cluster_iterator(part_sel_easy, edges_easy, cfg.box_dim, attibutes=['pos_folded',], min_part=40)
-#         for subgraph_mag, subgraph_easy in zip(graph_iterator_mag,graph_iterator_easy):
-#             positions=np.array(subgraph_easy.vs['pos_folded_unbroken'])
-#             assert np.shape(positions)==(40,3), "Expected 40 particles per easy filament"
-#             p1 = positions[0::2]      # indices 0,2,4,...
-#             p2 = positions[1::2]      # indices 1,3,5,...
-#             segments = p2 - p1      # shape (20, 3)
-           
-#             seg_norms = np.linalg.norm(segments, axis=1)
-#             assert all(seg_norms<3.), f"Segment norm too large, something is wrong! seg_norms={seg_norms}"
-#             segments = segments / seg_norms[:, None]
-#             dipoles=np.array(subgraph_mag.vs['dip'])
-#             dipole_norms = np.linalg.norm(dipoles, axis=1)
-#             dipoles=dipoles/dipole_norms[:, None]
-#             res_cors = np.einsum('ij,ij->i', dipoles, segments) 
-#             accumulated_lp_seg.extend(res_cors)            
-#     data_with_context[cfg.data_path] = accumulated_lp_seg
-#     return data_with_context
-
-
 def easy_dipmom_angle(cfg: AnalysisConfig):
-    
+    """
+    Calculate the angle between magnetic dipoles and directors reconstructed from type-2 anchors.
+
+    Warning
+    -------
+    This is a dataset-specific recovery kernel for simulations where particle
+    directors were not saved. It assumes that each filament has exactly 40
+    type-2 anchor particles ordered as all bottom anchors first, followed by
+    all top anchors, so anchors ``[:20]`` pair with anchors ``[20:]``. Do not
+    use this kernel for datasets with interleaved anchors or stored director
+    vectors without revisiting the pairing logic.
+    """
+    warnings.warn(
+        "easy_dipmom_angle assumes type-2 anchors are ordered as 20 bottom "
+        "anchors followed by 20 top anchors per filament; this is a "
+        "dataset-specific director reconstruction hack.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
@@ -336,9 +321,8 @@ def lp_projection(cfg: AnalysisConfig):
         part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
         
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
-        pf_indices = [list(range(x, x + 20))
-                                  for x in range(0, len(part_sel.particles), 20)]
-        # print(pf_indices)
+        pf_indices = [list(range(x, x + monomer_no))
+                                  for x in range(0, len(part_sel.particles), monomer_no)]
 
         edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
         graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim, attibutes=['pos_folded','dip'])
@@ -394,18 +378,26 @@ def magnetisation(cfg: AnalysisConfig):
     return data_with_context 
 
 def magn_princip_angle_dist(cfg: AnalysisConfig):
+    """
+    Compute angles between cluster magnetisation and principal gyration axis.
+
+    Filaments selected by ``cfg.object_predicate`` and ``cfg.particle_predicate``
+    are grouped into clusters. For each cluster, the mean dipole vector is
+    compared with the largest principal-axis eigenvector.
+    """
 
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+    monomer_no = int(context.determine_key_val_from_filename(cfg.template_hndl,cfg.data_path,'what_monomer_number'))
     accumulated_magnetisation = []
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
         fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
         part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
-        pf_indices = [list(range(x, x + 20))
-                                  for x in range(0, len(part_sel.particles), 20)]
+        pf_indices = [list(range(x, x + monomer_no))
+                                  for x in range(0, len(part_sel.particles), monomer_no)]
         edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
         graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim, attibutes=['pos_folded','dip'])
         reference=np.array([0,0,1])
@@ -418,6 +410,12 @@ def magn_princip_angle_dist(cfg: AnalysisConfig):
     return data_with_context 
 
 def magnetisation_culster_size(cfg: AnalysisConfig):
+    """
+    Return cluster size together with mean dipole magnetisation.
+
+    Selected particles are clustered by neighbour distance ``cfg.crit``. Each
+    result entry is ``(cluster_size, mean_dipole_z / cfg.norm)``.
+    """
 
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
@@ -425,7 +423,8 @@ def magnetisation_culster_size(cfg: AnalysisConfig):
     accumulated_magnetisation = []
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
-        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        connectivity_values = col.get_connectivity_values(cfg.particle_group)
+        sel_dataview=col.select_particles_by_object(cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
         posss = sel_dataview.pos_folded
         connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
         edges=[]
@@ -440,6 +439,13 @@ def magnetisation_culster_size(cfg: AnalysisConfig):
     return data_with_context 
 
 def degree_magnetisation(cfg: AnalysisConfig):
+    """
+    Compute filtered contact degree and dipole orientation per selected particle.
+
+    Candidate neighbours are found within ``cfg.crit``. Edges are kept when the
+    pair potential is attractive enough, then each selected particle contributes
+    ``(degree, dipole_z)`` in the filtered graph.
+    """
 
     data_with_context = {}
     data_file=h5py.File(cfg.data_path, "r")
@@ -447,34 +453,33 @@ def degree_magnetisation(cfg: AnalysisConfig):
     accumulated_magnetisation = []
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
-        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        connectivity_values = col.get_connectivity_values(cfg.particle_group)
+        sel_dataview=col.select_particles_by_object(cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
         posss = sel_dataview.pos_folded
+        dipoles = sel_dataview.dip
         connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
         edges=[]
         for part,niegh_parts in connectivity_list.items():
             for niegh in niegh_parts:
                 edges.append((part,niegh))
-        g2 = ig.Graph(n=len(data.particles), edges=edges)
-        attibutes=['pos_folded','dip']
-        for att in attibutes:
-            g2.vs[att] = getattr(data,att)
-        g2.simplify()
-        edges_list=g2.get_edgelist()
-        edges_filtered=[]
-        for x,y in edges_list:
-            print(x,y)
-            print(np.shape(g2.vs[x]['pos_folded']))
-            res=pair_potential(min_img_dist(g2.vs[x]['pos_folded'], g2.vs[y]['pos_folded'], cfg.box_dim), g2.vs[x]['dip'], g2.vs[y]['dip'])
-            if res <=-0.1:
-                edges_filtered.append((x,y))
-        g3 = ig.Graph(n=len(data.particles), edges=edges_filtered)
-        attibutes=['pos_folded','dip']
-        for att in attibutes:
-            g3.vs[att] = getattr(data,att)
-        g3.simplify()
-        graph_iterator=context.get_cluster_iterator(sel_dataview, edges, cfg.box_dim, min_part=20,attibutes=['pos_folded','dip'])
-        for verterx in g3.vs:
-            accumulated_magnetisation.append((len(verterx.neighbors()),verterx['dip'][-1]))            
+
+        neighbour_graph = ig.Graph(n=len(posss), edges=edges)
+        neighbour_graph.simplify()
+        filtered_edges=[]
+        for x,y in neighbour_graph.get_edgelist():
+            res=pair_potential(
+                min_img_dist(posss[x], posss[y], cfg.box_dim),
+                dipoles[x],
+                dipoles[y],
+            )
+            if res <= -0.1:
+                filtered_edges.append((x,y))
+
+        graph = ig.Graph(n=len(posss), edges=filtered_edges)
+        graph.simplify()
+        graph.vs['dip'] = list(dipoles)
+        for vertex in graph.vs:
+            accumulated_magnetisation.append((graph.degree(vertex.index), vertex['dip'][-1]))
     data_with_context[cfg.data_path] = accumulated_magnetisation
     return data_with_context     
 
@@ -539,7 +544,8 @@ def calculate_sf(cfg: AnalysisConfig):
         Required fields:
         - ``data_path``, ``particle_group``, ``box_dim``, ``chunk``,
           ``sq_params`` dict with keys:
-          ``'order'``, ``'orientations_per_wavevector'``, ``'subsample_every'``,
+          ``'order'``, ``'orientations_per_wavevector'``,
+          ``'subsample_wavevectors'``; optional ``'axis_mask'`` and ``'nthreads'``.
         - ``particle_predicate`` callable.
 
     Returns
@@ -560,13 +566,23 @@ def calculate_sf(cfg: AnalysisConfig):
     data_file=h5py.File(cfg.data_path, "r")
     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
 
+    sq_params = cfg.sq_params
+    subsample_wavevectors = sq_params['subsample_wavevectors']
+
     wavevectors_container, intensities_container = [], []
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
         mask=cfg.particle_predicate(col).flatten() # type: ignore
         posss = col.pos_folded[mask]
         wavevectors, intensities = sq_avx.calculate_structure_factor(
-            posss, cfg.sq_params['order'], cfg.box_dim[0], cfg.sq_params['orientations_per_wavevector'], cfg.sq_params['subsample_every'])
+            posss,
+            sq_params['order'],
+            cfg.box_dim[0],
+            sq_params['orientations_per_wavevector'],
+            subsample_wavevectors,
+            sq_params.get('axis_mask', [True, True, True]),
+            sq_params.get('nthreads', 1),
+        )
         wavevectors_container.append(wavevectors)
         intensities_container.append(intensities)
 
@@ -574,6 +590,13 @@ def calculate_sf(cfg: AnalysisConfig):
     return data_with_context
 
 def calculate_rdf(cfg: AnalysisConfig):
+    """
+    Calculate radial distribution functions for selected particles.
+
+    For each timestep in ``cfg.chunk``, particles passing
+    ``cfg.particle_predicate`` are passed to pyscal and the RDF histogram is
+    returned as wavevector/bin positions and intensities.
+    """
 
     import pyscal as pc
 
@@ -601,8 +624,7 @@ def calculate_rdf(cfg: AnalysisConfig):
     data_with_context[cfg.data_path] = wavevectors_container, intensities_container
     return data_with_context
 
-
-def write_vtf_from_particles(particles, box_dim, out_path):
+def _write_vtf_from_particles(particles, box_dim, out_path):
     """
     Write a minimal VTF file for VMD from (id, position, type) tuples.
     """
@@ -628,8 +650,14 @@ def write_vtf_from_particles(particles, box_dim, out_path):
     out_path.write_text("".join(lines))
     return out_path
 
-
 def mega_giga_analysis(cfg: AnalysisConfig):
+    """
+    Classify selected particles by Voronoi polyhedron topology for one frame.
+
+    ``cfg.chunk`` must select exactly one timestep. The kernel records the most
+    common ``(vertices, edges, faces)`` polyhedra and writes a VTF file with
+    enumerated particle types for visual inspection.
+    """
     import pyscal as pc
 
     data_with_context = {}
@@ -637,7 +665,10 @@ def mega_giga_analysis(cfg: AnalysisConfig):
     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
 
     start, end, step = cfg.chunk
-    for col in data.timestep[start:end:step].timestep:
+    timestep_selection = data.timestep[start:end:step]
+    if len(timestep_selection.timestep) != 1:
+        raise ValueError("mega_giga_analysis expects cfg.chunk to select exactly one timestep")
+    for col in timestep_selection.timestep:
         predicate_mask=cfg.particle_predicate(col).flatten() # type: ignore
         posss = col.pos_folded[predicate_mask]
         sys = pc.System()
@@ -717,18 +748,23 @@ def mega_giga_analysis(cfg: AnalysisConfig):
         if top_k:
             assert probs[:top_k].sum()>0.8
         vtf_out = Path(cfg.path_to_output) if cfg.path_to_output else Path(cfg.data_path).with_suffix('.vtf')
-        write_vtf_from_particles(particles_for_vtf, cfg.box_dim, vtf_out)
+        _write_vtf_from_particles(particles_for_vtf, cfg.box_dim, vtf_out)
         data_with_context[cfg.data_path] = {
             'top_polyhedra': enumerated_polyhedra,
             'particle_polyhedra_types': particle_polyhedra_types,
             'probabilities': probs[:top_k],
             'vtf_path': vtf_out,
         }
-        break
 
     return data_with_context
 
 def calculate_volume_voronoi(cfg: AnalysisConfig):
+    """
+    Calculate Voronoi cell volumes for selected particles over time.
+
+    Each timestep contributes a list of pyscal Voronoi volumes for particles
+    passing ``cfg.particle_predicate``.
+    """
 
     import pyscal as pc
 
@@ -756,6 +792,11 @@ def calculate_volume_voronoi(cfg: AnalysisConfig):
     return data_with_context     
 
 def calculate_voronoi_vects(cfg: AnalysisConfig):
+    """
+    Calculate pyscal Voronoi vectors for selected particles.
+
+    Results are flattened across all timesteps selected by ``cfg.chunk``.
+    """
 
     import pyscal as pc
 
@@ -783,6 +824,11 @@ def calculate_voronoi_vects(cfg: AnalysisConfig):
     return data_with_context 
 
 def calculate_voronoi_face_perimeters(cfg: AnalysisConfig):
+    """
+    Calculate Voronoi face perimeter data for selected particles.
+
+    Results are flattened across all timesteps selected by ``cfg.chunk``.
+    """
 
     import pyscal as pc
 
@@ -810,6 +856,11 @@ def calculate_voronoi_face_perimeters(cfg: AnalysisConfig):
     return data_with_context 
 
 def calculate_voronoi_no_of_edges(cfg: AnalysisConfig):
+    """
+    Calculate the number of edges in each selected particle's Voronoi cell.
+
+    Results are flattened across all timesteps selected by ``cfg.chunk``.
+    """
 
     import pyscal as pc
 
@@ -837,6 +888,11 @@ def calculate_voronoi_no_of_edges(cfg: AnalysisConfig):
     return data_with_context
 
 def calculate_voronoi_vertex_vectors(cfg: AnalysisConfig):
+    """
+    Calculate Voronoi vertex-vector data for selected particles.
+
+    Results are flattened across all timesteps selected by ``cfg.chunk``.
+    """
 
     import pyscal as pc
 
@@ -863,7 +919,6 @@ def calculate_voronoi_vertex_vectors(cfg: AnalysisConfig):
     data_with_context[cfg.data_path] = res_containter
     return data_with_context   
     
-
 def write_vtk_frame(cfg: AnalysisConfig, frame=-1):
     """
     Write a single VTK file (ASCII, Unstructured Grid) for a selected frame.
@@ -887,7 +942,8 @@ def write_vtk_frame(cfg: AnalysisConfig, frame=-1):
     data_file=h5py.File(cfg.data_path, "r")
     data=H5DataSelector(data_file ,particle_group=cfg.particle_group)
     data_per_fram=data.timestep[frame]
-    sel_dataview=data_per_fram.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+    connectivity_values = data_per_fram.get_connectivity_values(cfg.particle_group)
+    sel_dataview=data_per_fram.select_particles_by_object(cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
     positions=sel_dataview.pos_folded
     dipoles=sel_dataview.dip
     simss=cfg.data_path.split('/')[6]
@@ -940,7 +996,8 @@ def write_cluster_to_vtk(cfg: AnalysisConfig):
     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
     start, end, step = cfg.chunk
     for frame_id,col in enumerate(data.timestep[start:end:step].timestep):
-        sel_dataview=col.select_particles_by_predicate(cfg.particle_group, predicate=cfg.particle_predicate)
+        connectivity_values = col.get_connectivity_values(cfg.particle_group)
+        sel_dataview=col.select_particles_by_object(cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
         posss = sel_dataview.pos_folded
         connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
         edges=[]
@@ -967,7 +1024,7 @@ def write_cluster_to_vtk(cfg: AnalysisConfig):
                 for i in range(len(dipoles)):
                     vtk.write("%f %f %f\n" % (
                         dipoles[i][0], dipoles[i][1], dipoles[i][2]))
-        return 0   
+    return 0
 
 def get_data_timestep_len(cfg: AnalysisConfig):
     """

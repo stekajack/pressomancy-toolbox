@@ -42,7 +42,9 @@ class AnalysisConfig:
     sq_params: dict = field(default_factory=lambda: {
         'order': 10,
         'orientations_per_wavevector': 100,
-        'subsample_every': 1,
+        'subsample_wavevectors': 1,
+        'axis_mask': [True, True, True],
+        'nthreads': 1,
     })
 
     # Predicates (optional). Accept either a bool or a mask return.
