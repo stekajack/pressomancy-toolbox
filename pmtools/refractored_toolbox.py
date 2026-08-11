@@ -433,7 +433,15 @@ def get_cluster_iterator(
     assert len(data.timestep) == 1, "Data must contain exactly one timestep for cluster iteration."
     g2 = ig.Graph(n=len(data.particles), edges=edges_list)
     for att in attibutes:
-        g2.vs[att] = getattr(data,att)
+        try:
+            values = getattr(data, att)
+        except KeyError:
+            if att != 'pos_folded':
+                raise
+            # Legacy HDF5 files contain only unwrapped ``pos``. Fold a
+            # transient array for the periodic-breakage helpers below.
+            values = np.mod(np.asarray(data.pos), box_dim)
+        g2.vs[att] = values
     g2.simplify()
     decomposition = g2.decompose(minelements=min_part)
     for subgraph in decomposition:

@@ -46,6 +46,7 @@ class AnalysisConfig:
         'axis_mask': [True, True, True],
         'nthreads': 1,
     })
+    volume_cutoff: float = 20.0
 
     # Predicates (optional). Accept either a bool or a mask return.
     object_predicate: Predicate | None = None

@@ -150,6 +150,63 @@ def cluster_size(cfg: AnalysisConfig):
     data_with_context[cfg.data_path] = accumulated_gts
     return data_with_context
 
+def cluster_magnetisation(cfg: AnalysisConfig):
+    """
+    Compute mean dipole magnetisation per particle cluster over a trajectory.
+
+    For each timestep (batched by ``cfg.chunk``), selected particles are
+    clustered by neighbour distance ``cfg.crit``. For each cluster, records
+    the mean z-component of the particle dipoles, divided by ``cfg.norm``.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Analysis configuration with at least:
+        - ``data_path`` : path to HDF5 file.
+        - ``particle_group`` : HDF5 group name.
+        - ``particle_predicate`` : callable producing a boolean mask for particles.
+        - ``box_dim`` : array-like box dimensions.
+        - ``crit`` : neighbour cutoff for cluster detection.
+        - ``norm`` : magnetisation normalization factor.
+        - ``chunk`` : tuple ``(start, end, step)`` for timestep slicing.
+
+    Returns
+    -------
+    dict
+        Mapping ``{cfg.data_path: List[List[float]]}`` containing one list of
+        cluster magnetisations per processed timestep.
+    """
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file, particle_group=cfg.particle_group)
+    accumulated_gts = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        connectivity_values = col.get_connectivity_values(cfg.particle_group)
+        sel_dataview=col.select_particles_by_object(cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
+        posss = sel_dataview.pos_folded
+        connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
+        edges=[]
+        for part,niegh_parts in connectivity_list.items():
+            for niegh in niegh_parts:
+                edges.append((part,niegh))
+        graph_iterator=context.get_cluster_iterator(
+            sel_dataview,
+            edges,
+            cfg.box_dim,
+            min_part=20,
+            attibutes=['pos_folded', 'dip'],
+        )
+        accumulated_magnetisation=[]
+        for subgraph in graph_iterator:
+            dipoles=np.mean(subgraph.vs['dip'],axis=0)[-1]/float(cfg.norm)
+            accumulated_magnetisation.append(dipoles)      
+        accumulated_gts.append(accumulated_magnetisation)
+       
+    data_with_context[cfg.data_path] = accumulated_gts
+    return data_with_context
+
 def pair_distances(cfg: AnalysisConfig):
     """
     Measure neighbour-pair distances within selected particle clusters.
@@ -321,8 +378,8 @@ def lp_projection(cfg: AnalysisConfig):
         part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
         
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
-        pf_indices = [list(range(x, x + monomer_no))
-                                  for x in range(0, len(part_sel.particles), monomer_no)]
+        # pf_indices = [list(range(x, x + monomer_no))
+        #                           for x in range(0, len(part_sel.particles), monomer_no)]
 
         edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
         graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim, attibutes=['pos_folded','dip'])
@@ -667,7 +724,7 @@ def mega_giga_analysis(cfg: AnalysisConfig):
     start, end, step = cfg.chunk
     timestep_selection = data.timestep[start:end:step]
     if len(timestep_selection.timestep) != 1:
-        raise ValueError("mega_giga_analysis expects cfg.chunk to select exactly one timestep")
+        raise ValueError("expects cfg.chunk to select exactly one timestep")
     for col in timestep_selection.timestep:
         predicate_mask=cfg.particle_predicate(col).flatten() # type: ignore
         posss = col.pos_folded[predicate_mask]
