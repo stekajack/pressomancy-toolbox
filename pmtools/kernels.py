@@ -49,11 +49,11 @@ def per_fil_gyr(cfg: AnalysisConfig):
     for col in data.timestep[start:end:step].timestep:
 
         fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
-        
+        part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
+        edges = context.edges_from_ordered_particle_id_groups(part_sel, pf_indices)
 
-        edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
-        graph_iterator=context.get_cluster_iterator(col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate), edges, cfg.box_dim)
+        graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim)
         for subgraph in graph_iterator:
             accumulated_gts.append(GyrationTensor(np.array(subgraph.vs['pos_folded_unbroken'])) )
        
@@ -273,11 +273,7 @@ def mlp_projection(cfg: AnalysisConfig):
         part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
         
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
-        pf_indices = [list(range(x, x + monomer_no))
-                                  for x in range(0, len(part_sel.particles), monomer_no)]
-        # print(pf_indices)
-
-        edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
+        edges = context.edges_from_ordered_particle_id_groups(part_sel, pf_indices)
         graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim, attibutes=['pos_folded','dip'])
         for subgraph in graph_iterator:
             positions=np.array(subgraph.vs['pos_folded_unbroken'])
@@ -378,10 +374,7 @@ def lp_projection(cfg: AnalysisConfig):
         part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
         
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
-        # pf_indices = [list(range(x, x + monomer_no))
-        #                           for x in range(0, len(part_sel.particles), monomer_no)]
-
-        edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
+        edges = context.edges_from_ordered_particle_id_groups(part_sel, pf_indices)
         graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim, attibutes=['pos_folded','dip'])
         for subgraph in graph_iterator:
             positions=np.array(subgraph.vs['pos_folded_unbroken'])
@@ -395,6 +388,55 @@ def lp_projection(cfg: AnalysisConfig):
     data_with_context[cfg.data_path] = np.mean(
         accumulated_lp_seg, axis=0), xax
     return data_with_context  
+
+def Ree_segments(cfg: AnalysisConfig):
+    """
+    Compute filament end-to-end distances and segment lengths.
+
+    For each timestep, selects filaments, builds linear edges, iterates over
+    connected clusters, and records the end-to-end distance and consecutive
+    monomer center-of-mass segment lengths for each filament.
+
+    Parameters
+    ----------
+    cfg : AnalysisConfig
+        Analysis configuration with fields used:
+        - ``data_path``, ``particle_group``, ``object_predicate``,
+          ``particle_predicate``, ``template_hndl``, ``box_dim``, ``chunk``.
+
+    Returns
+    -------
+    dict
+        ``{cfg.data_path: (end_to_end_distances, segment_lengths)}``, with one
+        entry per processed filament and timestep. Each segment-length entry
+        contains ``monomer_no - 1`` consecutive segment lengths.
+    """
+
+    data_with_context = {}
+    data_file=h5py.File(cfg.data_path, "r")
+    data=H5DataSelector(data_file,particle_group=cfg.particle_group)
+    monomer_no = int(context.determine_key_val_from_filename(cfg.template_hndl,cfg.data_path,'what_monomer_number'))
+    accumulated_ree = []
+    accumulated_segments = []
+    start, end, step = cfg.chunk
+    for col in data.timestep[start:end:step].timestep:
+        fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
+        part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
+
+        pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
+
+        edges = context.edges_from_ordered_particle_id_groups(part_sel, pf_indices)
+        graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim, attibutes=['pos_folded','dip'])
+        for subgraph in graph_iterator:
+            positions=np.array(subgraph.vs['pos_folded_unbroken'])
+            com_pos = np.mean(positions.reshape(monomer_no, -1, 3), axis=1)
+            ete_vec = com_pos[-1]-com_pos[0]
+            segments = np.diff(com_pos, axis=0)
+            seg_norms = np.linalg.norm(segments, axis=1)
+            accumulated_ree.append(np.linalg.norm(ete_vec))
+            accumulated_segments.append(seg_norms)
+    data_with_context[cfg.data_path] = accumulated_ree, accumulated_segments
+    return data_with_context
 
 def magnetisation(cfg: AnalysisConfig):
 
@@ -425,9 +467,10 @@ def magnetisation(cfg: AnalysisConfig):
     start, end, step = cfg.chunk
     for col in data.timestep[start:end:step].timestep:
         fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
+        part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
-        edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
-        graph_iterator=context.get_cluster_iterator(col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate), edges, cfg.box_dim, attibutes=['pos_folded','dip'])
+        edges = context.edges_from_ordered_particle_id_groups(part_sel, pf_indices)
+        graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim, attibutes=['pos_folded','dip'])
         for subgraph in graph_iterator:
             dipoles=np.mean(subgraph.vs['dip'],axis=0)[-1]/float(cfg.norm)
             accumulated_magnetisation.append(dipoles)            
@@ -453,9 +496,7 @@ def magn_princip_angle_dist(cfg: AnalysisConfig):
         fitered_fil_ids=col.get_connectivity_values(cfg.particle_group, predicate=cfg.object_predicate)
         part_sel=col.select_particles_by_object(cfg.particle_group, fitered_fil_ids,predicate=cfg.particle_predicate)
         pf_indices = [col.select_particles_by_object(cfg.particle_group, myed,predicate=cfg.particle_predicate).id.flatten() for myed in fitered_fil_ids]
-        pf_indices = [list(range(x, x + monomer_no))
-                                  for x in range(0, len(part_sel.particles), monomer_no)]
-        edges = [(int(x), int(y)) for pf_el in pf_indices for x,y in pairwise(pf_el)]
+        edges = context.edges_from_ordered_particle_id_groups(part_sel, pf_indices)
         graph_iterator=context.get_cluster_iterator(part_sel, edges, cfg.box_dim, attibutes=['pos_folded','dip'])
         reference=np.array([0,0,1])
         for subgraph in graph_iterator:
@@ -1028,11 +1069,10 @@ def write_cluster_to_vtk(cfg: AnalysisConfig):
     """
     Write VTK files for each detected cluster in each processed frame.
 
-    For every selected timestep, builds a connectivity graph using a neighbour
-    search (within ``cfg.crit`` and periodic box ``cfg.box_dim``), iterates
-    over clusters via ``context.get_cluster_iterator``, and writes particle
-    positions and dipoles for each cluster to individual VTK files in
-    ``cfg.path_to_output``.
+    For every selected timestep, builds a graph from selected object
+    connectivity when ``cfg.object_predicate`` is provided. Otherwise, it uses
+    a neighbour search within ``cfg.crit``. It then writes each connected
+    component to an individual VTK file in ``cfg.path_to_output``.
 
     Parameters
     ----------
@@ -1053,15 +1093,30 @@ def write_cluster_to_vtk(cfg: AnalysisConfig):
     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
     start, end, step = cfg.chunk
     for frame_id,col in enumerate(data.timestep[start:end:step].timestep):
-        connectivity_values = col.get_connectivity_values(cfg.particle_group)
-        sel_dataview=col.select_particles_by_object(cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
-        posss = sel_dataview.pos_folded
-        connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
-        edges=[]
-        for part,niegh_parts in connectivity_list.items():
-            for niegh in niegh_parts:
-                edges.append((part,niegh))
-        graph_iterator=context.get_cluster_iterator(sel_dataview, edges, cfg.box_dim, attibutes=['pos','pos_folded','dip'])
+        connectivity_values = col.get_connectivity_values(
+            cfg.particle_group, predicate=cfg.object_predicate)
+        sel_dataview=col.select_particles_by_object(
+            cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
+        if cfg.object_predicate is None:
+            posss = sel_dataview.pos_folded
+            connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
+            edges=[(part, neighbour)
+                   for part, neighbours in connectivity_list.items()
+                   for neighbour in neighbours]
+        else:
+            selected_ids = np.asarray(sel_dataview.id).flatten()
+            id_to_local = {int(particle_id): index
+                           for index, particle_id in enumerate(selected_ids)}
+            edges=[]
+            for object_id in connectivity_values:
+                object_ids = col.select_particles_by_object(
+                    cfg.particle_group, object_id,
+                    predicate=cfg.particle_predicate).id.flatten()
+                edges.extend((id_to_local[int(x)], id_to_local[int(y)])
+                             for x, y in pairwise(object_ids))
+        graph_iterator=context.get_cluster_iterator(
+            sel_dataview, edges, cfg.box_dim,
+            attibutes=['pos','pos_folded','dip'])
         for cluster_id, subgraph in enumerate(graph_iterator):
             positions=subgraph.vs['pos_folded_unbroken']
             dipoles=subgraph.vs['dip']

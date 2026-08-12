@@ -1,4 +1,4 @@
-from itertools import product
+from itertools import product, pairwise
 import numpy as np
 import igraph as ig
 from string import Template
@@ -340,13 +340,16 @@ def unbreak_graph(broken_graph: ig.Graph, box_dim: np.ndarray) -> np.ndarray:
     """
     warnings.warn(f"The coordinates passed to unbreak_graph must be folded!. The logic doesnt work otherwise!")
 
+    broken_graph = broken_graph.copy()
+    broken_graph.vs['_unbreak_order'] = np.arange(broken_graph.vcount())
     decomposition = broken_graph.decompose()
     len_and_pos=[(len(el.vs['pos_folded']), 
-        el.vs['pos_folded']) for el in decomposition]
+        el.vs['pos_folded'], el.vs['_unbreak_order']) for el in decomposition]
     len_and_pos.sort(key=lambda t: t[0], reverse=True)
-    pos_flat = np.concatenate([y for _,y in len_and_pos])
+    pos_flat = np.concatenate([y for _,y,_ in len_and_pos])
+    particle_order = np.concatenate([z for _,_,z in len_and_pos])
     means_and_positions = [(x, np.mean(
-        y, axis=0)) for x,y in len_and_pos]
+        y, axis=0)) for x,y,_ in len_and_pos]
     start_idx = means_and_positions[0][0]
     ref_com=means_and_positions[0][1]
     # Start from index 1 to skip the first cluster
@@ -360,7 +363,7 @@ def unbreak_graph(broken_graph: ig.Graph, box_dim: np.ndarray) -> np.ndarray:
         pos_flat[start_idx:start_idx + num_vertices] += fin_shift
         start_idx += num_vertices
 
-    return pos_flat
+    return pos_flat[np.argsort(particle_order)]
 
 def min_img_dist(s: np.ndarray, t: np.ndarray, box_dim: np.ndarray) -> np.ndarray:
     """
@@ -453,3 +456,51 @@ def get_cluster_iterator(
                 pass_graph, box_dim)
             subgraph.vs['pos_folded_unbroken'] = positions
         yield subgraph
+
+def edges_from_ordered_particle_id_groups(part_sel, particle_id_groups):
+    """
+    Convert ordered particle-ID groups to local graph edges.
+
+    Each input group defines a linear sequence: one edge is produced between
+    every consecutive pair of particle IDs in that group. The returned edge
+    endpoints are indices local to ``part_sel`` and can therefore be passed
+    directly to :class:`igraph.Graph` or :func:`get_cluster_iterator`.
+
+    Parameters
+    ----------
+    part_sel : H5DataSelector
+        Selected particle view that supplies the graph vertices. Its ``id``
+        values define the mapping from persistent particle IDs to local vertex
+        indices.
+    particle_id_groups : iterable of iterable of int
+        Ordered groups of persistent particle IDs. Groups may represent
+        filaments, polymers, or any other ordered particle collection; they
+        need not be chains in a domain-specific sense.
+
+    Returns
+    -------
+    list[tuple[int, int]]
+        Edges expressed in the local vertex-index space ``0..len(part_sel)-1``.
+
+    Raises
+    ------
+    ValueError
+        If a particle ID in ``particle_id_groups`` is absent from ``part_sel``.
+    """
+    id_to_vertex = {
+        int(particle_id): vertex
+        for vertex, particle_id in enumerate(np.asarray(part_sel.id).ravel())
+    }
+
+    try:
+        return [
+            (id_to_vertex[int(a)], id_to_vertex[int(b)])
+            for particle_ids in particle_id_groups
+            for a, b in pairwise(particle_ids)
+        ]
+    
+    except KeyError as exc:
+        raise ValueError(
+            f"Connectivity refers to particle ID {exc.args[0]}, "
+            "which is absent from the selected particle view."
+        ) from exc
