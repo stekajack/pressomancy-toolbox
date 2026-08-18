@@ -749,37 +749,38 @@ def _write_vtf_from_particles(particles, box_dim, out_path):
     return out_path
 
 def mega_giga_analysis(cfg: AnalysisConfig):
-    """
-    Classify selected particles by Voronoi polyhedron topology for one frame.
-
-    ``cfg.chunk`` must select exactly one timestep. The kernel records the most
-    common ``(vertices, edges, faces)`` polyhedra and writes a VTF file with
-    enumerated particle types for visual inspection.
-    """
     import pyscal as pc
 
-    data_with_context = {}
+    radial_samples: list[tuple[tuple[int, int, int], int, float, float]] = []
+    enumerated_polyhedra: list[tuple[int, tuple[int, int, int]]] = []
+    particle_polyhedra_types: list[tuple[int, tuple[int, int, int], int]] = []
+    vtf_out: Path | None = None
+    type_to_polyhedron: dict[int, tuple[int, int, int]] = {}
+    bin_width = 1.0
+    polyhedron_probabilities: dict[tuple[int, int, int], float] = {}
+
     data_file=h5py.File(cfg.data_path, "r")
     data=H5DataSelector(data_file,particle_group=cfg.particle_group)
 
     start, end, step = cfg.chunk
-    timestep_selection = data.timestep[start:end:step]
-    if len(timestep_selection.timestep) != 1:
-        raise ValueError("expects cfg.chunk to select exactly one timestep")
-    for col in timestep_selection.timestep:
-        predicate_mask=cfg.particle_predicate(col).flatten() # type: ignore
-        posss = col.pos_folded[predicate_mask]
+    for col in data.timestep[start:end:step].timestep:
+        connectivity_values = col.get_connectivity_values(cfg.particle_group)
+        sel_dataview = col.select_particles_by_object(cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
+        posss = sel_dataview.pos_folded
+        src_ids = sel_dataview.id.flatten()
+
         sys = pc.System()
         sys.box = [
             [cfg.box_dim[0], 0.0, 0.0],
             [0.0, cfg.box_dim[1], 0.0],
             [0.0, 0.0, cfg.box_dim[2]]]
         sys.atoms = [pc.Atom(pos=pos_el, id=id_el)
-                        for id_el, pos_el in enumerate(posss)]
+                        for id_el, pos_el in zip(src_ids, posss)]
         sys.find_neighbors(method='voronoi')
         atom_ids= np.array([atom.id for atom in sys.atoms])
+        assert np.array_equal(src_ids, atom_ids), 'identities of the particles from the source must match identities from pyscal!'
         vor_vol = np.array([atom.volume for atom in sys.atoms])
-        valid_mask=vor_vol<20
+        valid_mask=vor_vol<15
         face_perimeters = [atom.face_perimeters for atom in sys.atoms]
         voronoi_face_perimeters_data_selected=[len(x) for id,x in enumerate(face_perimeters) if valid_mask[id]]
         no_of_edges = [atom.no_of_edges for atom in sys.atoms]
@@ -787,37 +788,41 @@ def mega_giga_analysis(cfg: AnalysisConfig):
         vertex_vectors = [atom.vertex_vectors for atom in sys.atoms]
         voronoi_vertex_vectors_data_selected=[x for id,x in enumerate(vertex_vectors) if valid_mask[id]]
         voronoi_vertex_vectors_data_selected=[len(x)/3 for x in voronoi_vertex_vectors_data_selected]
-        V = np.array(voronoi_vertex_vectors_data_selected)           # shape (N,)
-        E = np.array(voronoi_no_of_edges_data_selected)              # shape (N,)
-        F = np.array(voronoi_face_perimeters_data_selected)          # shape (N,)
+        V = np.array(voronoi_vertex_vectors_data_selected)    # shape (N,)
+        E = np.array(voronoi_no_of_edges_data_selected)       # shape (N,)
+        F = np.array(voronoi_face_perimeters_data_selected)   # shape (N,)
 
         xi=V-E+F
         assert all(xi==2),'cant have non-covex voronoi cells!'
 
-        if len(V):
-            # Pack into structured array of shape (N, 3)
-            polyhedra = np.stack([V, E, F], axis=1)   # shape (N,3)
+        # Pack into structured array of shape (N, 3)
+        polyhedra = np.stack([V, E, F], axis=1)   # shape (N,3)
 
-            # Get unique (V,E,F) triples and their counts
-            unique_polyhedra, counts = np.unique(polyhedra, axis=0, return_counts=True)
+        # Get unique (V,E,F) triples and their counts
+        unique_polyhedra, counts = np.unique(polyhedra, axis=0, return_counts=True)
 
-            # Probabilities / frequencies
-            probs = counts / counts.sum()
+        # Probabilities / frequencies
+        probs = counts / counts.sum()
 
-            # Sort by probability descending
-            idx = np.argsort(probs)[::-1]
-            unique_polyhedra = unique_polyhedra[idx]
-            probs = probs[idx]
-            print('unique_polyhedra: ',unique_polyhedra)
-            print('probs: ',probs)
+        # Sort by probability descending
+        idx = np.argsort(probs)[::-1]
+        unique_polyhedra = unique_polyhedra[idx]
+        probs = probs[idx]
+        polyhedron_probabilities = {
+            tuple(int(val) for val in poly): float(prob)
+            for poly, prob in zip(unique_polyhedra, probs)
+        }
+        print('unique_polyhedra: ',unique_polyhedra)
+        print('probs: ',probs)
 
-        else:
-            polyhedra = np.empty((0, 3))
-            unique_polyhedra = np.empty((0, 3))
-            probs = np.array([])
+        # Determine how many polyhedra are needed to cover 80% probability mass
+        cumulative = 0.0
+        top_k = 0
+        while top_k < len(unique_polyhedra) and cumulative <= 0.8:
+            cumulative += probs[top_k]
+            top_k += 1
 
-        # Enumerate the six most probable unique polyhedra starting at 347
-        top_k = min(6, len(unique_polyhedra))
+        # Enumerate the selected unique polyhedra starting at 347
         enumerated_polyhedra = []
         enumeration_lookup = {}
         for offset, poly in enumerate(unique_polyhedra[:top_k]):
@@ -825,12 +830,15 @@ def mega_giga_analysis(cfg: AnalysisConfig):
             poly_key = tuple(int(val) for val in poly)
             enumerated_polyhedra.append((enum_value, poly_key))
             enumeration_lookup[poly_key] = enum_value
+        type_to_polyhedron = {enum: poly for enum, poly in enumerated_polyhedra}
 
         # Map each selected particle id to its polyhedron and enumerated type
         print('enumeration_lookup:', enumeration_lookup)
         particle_polyhedra_types = []
         particles_for_vtf = []
         poly_idx = 0
+        type_lookup: dict[int, int] = {}
+        poly_lookup: dict[int, tuple[int, int, int]] = {}
         for atom_id, pos, is_valid in zip(atom_ids.tolist(), posss.tolist(), valid_mask.tolist()):
             if is_valid and poly_idx < len(polyhedra):
                 poly = polyhedra[poly_idx]
@@ -841,20 +849,86 @@ def mega_giga_analysis(cfg: AnalysisConfig):
                 poly_key = (-1, -1, -1)
                 enum_value = 765
             particle_polyhedra_types.append((int(atom_id), poly_key, int(enum_value)))
+            type_lookup[int(atom_id)] = int(enum_value)
+            poly_lookup[int(atom_id)] = poly_key
             particles_for_vtf.append((int(atom_id), tuple(float(x) for x in pos), int(enum_value)))
 
         if top_k:
-            assert probs[:top_k].sum()>0.8
-        vtf_out = Path(cfg.path_to_output) if cfg.path_to_output else Path(cfg.data_path).with_suffix('.vtf')
-        _write_vtf_from_particles(particles_for_vtf, cfg.box_dim, vtf_out)
-        data_with_context[cfg.data_path] = {
-            'top_polyhedra': enumerated_polyhedra,
-            'particle_polyhedra_types': particle_polyhedra_types,
-            'probabilities': probs[:top_k],
-            'vtf_path': vtf_out,
-        }
+            assert probs[:top_k].sum()>0.8, f'subset of VEF vectors dont add up to over 80 percent { probs[:top_k].sum()}'
 
-    return data_with_context
+        connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
+        edges=[]
+        for part,niegh_parts in connectivity_list.items():
+            for niegh in niegh_parts:
+                edges.append((part,niegh))
+        graph_iterator=context.get_cluster_iterator(sel_dataview, edges, cfg.box_dim, min_part=20, attibutes=['id','pos_folded','dip'])
+
+        for subgraph in graph_iterator:
+            loc_pos=np.asarray(subgraph.vs['pos_folded_unbroken'],dtype=float)
+            loc_ids=np.asarray(subgraph.vs['id'], dtype=int).ravel()
+            if loc_pos.size == 0:
+                continue
+            z_coords = loc_pos[:, 2]
+            z_min = z_coords.min()
+            z_max = z_coords.max()
+            bin_edges = np.arange(z_min, z_max + bin_width, bin_width)
+            if bin_edges.size == 0:
+                continue
+            if bin_edges.size == 1 or bin_edges[-1] < z_max:
+                bin_edges = np.append(bin_edges, bin_edges[-1] + bin_width)
+
+            xy_coords = loc_pos[:, :2]
+            cluster_center_xy = xy_coords.mean(axis=0)
+            min_slice_population = 3
+            last_interval = bin_edges.size - 2
+            for idx in range(bin_edges.size - 1):
+                lower, upper = bin_edges[idx], bin_edges[idx + 1]
+                if idx == last_interval:
+                    mask_slice = (z_coords >= lower) & (z_coords <= upper)
+                else:
+                    mask_slice = (z_coords >= lower) & (z_coords < upper)
+                slice_indices = np.where(mask_slice)[0]
+                if slice_indices.size == 0:
+                    continue
+                if slice_indices.size < min_slice_population:
+                    warnings.warn(
+                        f"Slice with {slice_indices.size} particle(s) encountered in mega_giga_analysis for {cfg.data_path}; skipping.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    continue
+                slice_positions = loc_pos[slice_indices]
+                slice_ids = loc_ids[slice_indices]
+                z_center = float(slice_positions[:, 2].mean())
+                radial_distances = np.linalg.norm(xy_coords[slice_indices] - cluster_center_xy, axis=1)
+                for pid, radial_dist in zip(slice_ids, radial_distances):
+                    pid_int = int(pid)
+                    type_id = type_lookup.get(pid_int, 1)
+                    poly_key = poly_lookup.get(pid_int, (-1, -1, -1))
+                    radial_samples.append((tuple(poly_key), int(type_id), float(radial_dist), z_center))
+
+        vtf_out = Path(cfg.path_to_output) if cfg.path_to_output else Path(cfg.data_path).with_suffix(".vtf")
+        with open(vtf_out, 'w') as vtf:
+            if not particles_for_vtf:
+                vtf.write("vtf 1.00\n")
+            else:
+                vtf.write(f"unitcell {cfg.box_dim[0]} {cfg.box_dim[1]} {cfg.box_dim[2]}\n")
+                vtf.write(f"atom 0:{len(particles_for_vtf)-1} radius 0.5 name A\n")
+                for particle_index, (_, _, type_id) in enumerate(particles_for_vtf):
+                    vtf.write(f"atom {particle_index} type {type_id}\n")
+                vtf.write("timestep\n")
+                for _, (x, y, z), _ in particles_for_vtf:
+                    vtf.write(f"{x:.6f} {y:.6f} {z:.6f}\n")
+
+    return {
+        'enumerated_polyhedra': enumerated_polyhedra,
+        'particle_polyhedra_types': particle_polyhedra_types,
+        'radial_samples': radial_samples,
+        'polyhedron_probabilities': polyhedron_probabilities,
+        'type_to_polyhedron': {int(t): tuple(map(int, poly)) for t, poly in type_to_polyhedron.items()},
+        'vtf_path': vtf_out,
+        'bin_width': bin_width,
+    }
 
 def calculate_volume_voronoi(cfg: AnalysisConfig):
     """
