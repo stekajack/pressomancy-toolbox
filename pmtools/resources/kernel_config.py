@@ -46,7 +46,11 @@ class AnalysisConfig:
         'axis_mask': [True, True, True],
         'nthreads': 1,
     })
-    volume_cutoff: float = 20.0
+    volume_cutoff: float | None = None
+    probability_floor: float | None = None
+    min_cluster_size: int = 20
+    z_bin_width: float = 1.0
+    min_slice_population: int = 3
 
     # Predicates (optional). Accept either a bool or a mask return.
     object_predicate: Predicate | None = None
