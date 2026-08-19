@@ -502,7 +502,7 @@ def magn_princip_angle_dist(cfg: AnalysisConfig):
         for subgraph in graph_iterator:
             chain_dip_mom=np.mean(subgraph.vs['dip'],axis=0)/float(cfg.norm)
             gt=GyrationTensor(np.array(subgraph.vs['pos_folded_unbroken'])) 
-            res_angle=vg.angle(chain_dip_mom,vg.aligned_with(gt.eigenvectors[-1], reference, reverse=False), units='deg')
+            res_angle=vg.angle(chain_dip_mom,vg.aligned_with(gt.eigenvectors[:, -1], reference, reverse=False), units='deg')
             accumulated_magnetisation.append(np.minimum(res_angle, 180 - res_angle))            
     data_with_context[cfg.data_path] = accumulated_magnetisation
     return data_with_context 
