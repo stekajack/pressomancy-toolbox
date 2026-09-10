@@ -7,5 +7,12 @@ setup(
     author="Deniz Mostarac",
     author_email="deniz.mostarac@ed.ac.uk",
     description="wip",
-    python_requires='>=3.6',  # Specify the Python version requirement
+    install_requires=[
+        "numpy",
+        "h5py",
+        "igraph",
+        "vg",
+        "pressomancy",
+    ],
+    python_requires='>=3.10',  # Specify the Python version requirement
 )
