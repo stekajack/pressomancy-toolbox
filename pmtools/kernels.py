@@ -1100,7 +1100,13 @@ def write_vtk_frame(cfg: AnalysisConfig, frame=-1):
     data_per_fram=data.timestep[frame]
     connectivity_values = data_per_fram.get_connectivity_values(cfg.particle_group)
     sel_dataview=data_per_fram.select_particles_by_object(cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
-    positions=sel_dataview.pos_folded
+    try:
+        positions = sel_dataview.pos_folded
+    except KeyError:
+        # Older trajectories store only unwrapped positions. Match the
+        # fallback in get_cluster_iterator so neighbour detection and
+        # periodic cluster reconstruction use the same coordinates.
+        positions = np.mod(np.asarray(sel_dataview.pos), cfg.box_dim)
     dipoles=sel_dataview.dip
     simss=cfg.data_path.split('/')[6]
     frfr=cfg.data_path.split('/')[-1].strip('.h5')
@@ -1156,7 +1162,13 @@ def write_cluster_to_vtk(cfg: AnalysisConfig):
         sel_dataview=col.select_particles_by_object(
             cfg.particle_group, connectivity_values, predicate=cfg.particle_predicate)
         if cfg.object_predicate is None:
-            posss = sel_dataview.pos_folded
+            try:
+                posss = sel_dataview.pos_folded
+            except KeyError:
+                # Older trajectories store only unwrapped positions. Match the
+                # fallback in get_cluster_iterator so neighbour detection and
+                # periodic cluster reconstruction use the same coordinates.
+                posss = np.mod(np.asarray(sel_dataview.pos), cfg.box_dim)
             connectivity_list=get_neighbours(posss,cfg.box_dim[0],cfg.crit)
             edges=[(part, neighbour)
                    for part, neighbours in connectivity_list.items()
